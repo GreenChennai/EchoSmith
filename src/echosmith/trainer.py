@@ -1,12 +1,18 @@
-"""GPT-SoVITS 训练编排：prepare_datasets×3 → s2_train(SoVITS) → s1_train(GPT)。
+"""GPT-SoVITS 训练编排（契约已对照官方源码核验，RVC-Boss/GPT-SoVITS main 分支）。
 
-复刻官方 webui 的调用契约（子进程 + 环境变量传参，详见各阶段 env 构造），
-CPU 模式（is_half=false，单进程）。预训练权重按引擎版本自动探测。
-属「需真机联调」路径：各阶段脚本缺失/环境变量契约变化都会明确报错。
+流程与 webui.py 完全一致：
+  1-get-text.py → [merge 2-name2text-{i}.txt → 2-name2text.txt]
+  2-get-hubert-wav32k.py →（v2Pro/v2ProPlus/v3/v4 额外 2-get-sv.py）
+  3-get-semantic.py → [merge 6-name2semantic-{i}.tsv → 6-name2semantic.tsv]
+  s2_train.py --config TEMP/tmp_s2.json（由 GPT_SoVITS/configs/s2*.json 改写）
+  s1_train.py --config_file TEMP/tmp_s1.yaml（由 configs/s1longer-v2.yaml 改写）
+
+prepare 阶段用环境变量（i_part=0 / all_parts=1 / _CUDA_VISIBLE_DEVICES=0 / is_half=False），
+训练阶段用配置文件；CPU 模式下 fp16_run=False / precision="32"、batch_size 减半（与 webui 相同）。
 """
 from __future__ import annotations
 
-import glob
+import json
 import os
 import subprocess
 import sys
@@ -19,53 +25,94 @@ from .state import Shared
 
 WIN_SILENT = 0x08000000 if sys.platform == "win32" else 0
 
+# 与引擎根 config.py 同源的映射
+SOVITS_WEIGHT_VERSION2ROOT = {
+    "v1": "SoVITS_weights", "v2": "SoVITS_weights_v2", "v3": "SoVITS_weights_v3",
+    "v4": "SoVITS_weights_v4", "v2Pro": "SoVITS_weights_v2Pro",
+    "v2ProPlus": "SoVITS_weights_v2ProPlus",
+}
+GPT_WEIGHT_VERSION2ROOT = {
+    "v1": "GPT_weights", "v2": "GPT_weights_v2", "v3": "GPT_weights_v3",
+    "v4": "GPT_weights_v4", "v2Pro": "GPT_weights_v2Pro",
+    "v2ProPlus": "GPT_weights_v2ProPlus",
+}
+S2_CONFIG_BY_VERSION = {
+    "v1": "GPT_SoVITS/configs/s2.json", "v2": "GPT_SoVITS/configs/s2.json",
+    "v3": "GPT_SoVITS/configs/s2.json", "v4": "GPT_SoVITS/configs/s2.json",
+    "v2Pro": "GPT_SoVITS/configs/s2v2Pro.json",
+    "v2ProPlus": "GPT_SoVITS/configs/s2v2ProPlus.json",
+}
+GPT_PRETRAIN_BY_VERSION = {
+    "v1": "GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
+    "v2": "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt",
+    "v3": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+    "v4": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+    "v2Pro": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+    "v2ProPlus": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+}
+SV_PATH = "GPT_SoVITS/pretrained_models/sv/pretrained_eres2netv2w24s4ep4.ckpt"
+BERT_DIR = "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
+HUBERT_DIR = "GPT_SoVITS/pretrained_models/chinese-hubert-base"
+
+# 需要(sv)语音自监督特征的版本（webui: "Pro" in version；v3/v4 同理走 sv）
+SV_VERSIONS = {"v2Pro", "v2ProPlus", "v3", "v4"}
+# 走 s2_train.py 的版本；v3/v4 官方走 s2_train_v3_lora.py（实验性支持）
+S2_SCRIPT_BY_VERSION = {
+    "v1": "GPT_SoVITS/s2_train.py", "v2": "GPT_SoVITS/s2_train.py",
+    "v2Pro": "GPT_SoVITS/s2_train.py", "v2ProPlus": "GPT_SoVITS/s2_train.py",
+    "v3": "GPT_SoVITS/s2_train_v3_lora.py", "v4": "GPT_SoVITS/s2_train_v3_lora.py",
+}
+
 
 class TrainError(RuntimeError):
     pass
 
 
-def _glob_first(engine: Path, patterns: list[str]) -> Path | None:
-    for pat in patterns:
-        hits = sorted(glob.glob(str(engine / pat)))
-        if hits:
-            return Path(hits[0])
-    return None
-
-
-def detect_pretrains(engine: Path) -> dict[str, Path]:
-    """按引擎版本探测预训练权重；缺关键项抛错。"""
-    got: dict[str, Path] = {}
-    for key, pats in {
-        "s2G": ["pretrained_models/gsv-v2pro-pretrained/s2G*.pth",
-                "pretrained_models/gsv-v2final-pretrained/s2G*.pth",
-                "pretrained_models/s2G488k.pth"],
-        "s2D": ["pretrained_models/gsv-v2pro-pretrained/s2D*.pth",
-                "pretrained_models/gsv-v2final-pretrained/s2D*.pth",
-                "pretrained_models/s2D488k.pth"],
-        "s1": ["pretrained_models/gsv-v2final-pretrained/s1bert*.ckpt",
-               "pretrained_models/s1bert*.ckpt"],
-        "bert": ["pretrained_models/chinese-roberta-wwm-ext-large"],
-        "hubert": ["pretrained_models/chinese-hubert-base"],
-    }.items():
-        p = _glob_first(engine, pats)
-        if p is None:
-            raise TrainError(f"未找到预训练权重（{key}）：请检查整合包 pretrained_models/ 是否完整")
-        got[key] = p
-    if not (engine / "GPT_SoVITS" / "configs" / "s2.json").is_file():
-        raise TrainError("缺少 GPT_SoVITS/configs/s2.json")
-    return got
+def detect_version_and_pretrains(engine: Path) -> dict:
+    """按官方 config.py 的命名探测版本与预训练权重。"""
+    pm = engine / "GPT_SoVITS" / "pretrained_models"
+    candidates = [
+        ("v2ProPlus", pm / "v2Pro" / "s2Gv2ProPlus.pth"),
+        ("v2Pro", pm / "v2Pro" / "s2Gv2Pro.pth"),
+        ("v2", pm / "gsv-v2final-pretrained" / "s2G2333k.pth"),
+        ("v1", pm / "s2G488k.pth"),
+    ]
+    version, s2g = next(((v, p) for v, p in candidates if p.is_file()), (None, None))
+    if version is None:
+        raise TrainError(
+            f"未识别到预训练 SoVITS 底模（{pm} 下缺 s2Gv2Pro*.pth / s2G2333k.pth / s2G488k.pth）"
+        )
+    s2d = Path(str(s2g).replace("s2G", "s2D"))
+    if not s2d.is_file():
+        raise TrainError(f"缺少判别器底模：{s2d.name}")
+    s1 = engine / GPT_PRETRAIN_BY_VERSION[version]
+    if not s1.is_file():
+        raise TrainError(f"缺少 GPT 底模：{s1.name}（{version} 版本）")
+    bert = engine / BERT_DIR
+    hubert = engine / HUBERT_DIR
+    if not bert.is_dir():
+        raise TrainError(f"缺少 BERT 模型目录：{bert.name}")
+    if not hubert.is_dir():
+        raise TrainError(f"缺少 Hubert(SSL) 模型目录：{hubert.name}")
+    sv = engine / SV_PATH
+    if version in SV_VERSIONS and not sv.is_file():
+        raise TrainError(f"{version} 版本需要 sv 模型：{sv.name}（整合包应自带）")
+    s2config = engine / S2_CONFIG_BY_VERSION[version]
+    if not s2config.is_file():
+        raise TrainError(f"缺少训练基础配置：{s2config.name}")
+    s1config = engine / ("GPT_SoVITS/configs/s1longer.yaml" if version == "v1"
+                         else "GPT_SoVITS/configs/s1longer-v2.yaml")
+    if not s1config.is_file():
+        raise TrainError(f"缺少 GPT 训练基础配置：{s1config.name}")
+    return {
+        "version": version, "s2G": s2g, "s2D": s2d, "s1": s1,
+        "bert": bert, "hubert": hubert, "sv": sv,
+        "s2config": s2config, "s1config": s1config,
+    }
 
 
 class Trainer(threading.Thread):
-    """五阶段顺序执行；遇错即停；cancel() 终止当前子进程。"""
-
-    STAGES = [
-        ("1-text", "GPT_SoVITS/prepare_datasets/1-get-text.py"),
-        ("2-hubert-wav32k", "GPT_SoVITS/prepare_datasets/2-get-hubert_and_wav32k.py"),
-        ("3-semantic", "GPT_SoVITS/prepare_datasets/3-get-semantic.py"),
-        ("4-sovits", "GPT_SoVITS/s2_train.py"),
-        ("5-gpt", "GPT_SoVITS/s1_train.py"),
-    ]
+    """顺序五阶段（Pro 版本六阶段）；遇错即停；cancel() 终止当前子进程。"""
 
     def __init__(self, cfg: Config, shared: Shared, list_path: Path, exp: str,
                  stages: list[str] | None = None) -> None:
@@ -101,72 +148,97 @@ class Trainer(threading.Thread):
         py = valid_engine(engine)
         if py is None:
             raise TrainError("引擎未就绪，请先完成整合包下载/导入")
-        pre = detect_pretrains(engine)
+        pre = detect_version_and_pretrains(engine)
+        version = pre["version"]
         opt_dir = engine / "logs" / self.exp
         opt_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = engine / "TEMP"
+        temp_dir.mkdir(parents=True, exist_ok=True)
         if not self.list_path.is_file():
             raise TrainError(f"训练清单不存在：{self.list_path}")
+        self.shared.log(
+            f"[训练] 版本 {version} ｜ s2底模 {pre['s2G'].name} ｜ s1底模 {pre['s1'].name}"
+        )
 
-        s2cfg = engine / "GPT_SoVITS" / "configs" / "s2.json"
-        s1cfg_candidates = [engine / "GPT_SoVITS" / "configs" / "s1longer-v2.yaml",
-                            engine / "GPT_SoVITS" / "configs" / "s1longer.yaml"]
-        s1cfg = next((c for c in s1cfg_candidates if c.is_file()), s1cfg_candidates[-1])
-
-        base = {
+        base_env = {
             "inp_text": str(self.list_path),
             "inp_wav_dir": "",
             "exp_name": self.exp,
             "opt_dir": str(opt_dir),
-            "bert_path": str(pre["bert"]),
-            "cnhubert_base_path": str(pre["hubert"]),
-            "is_half": "false",
-        }
-        envs: dict[str, dict[str, str]] = {
-            "1-text": dict(base),
-            "2-hubert-wav32k": {k: base[k] for k in
-                                ("inp_text", "inp_wav_dir", "exp_name", "opt_dir",
-                                 "cnhubert_base_path", "is_half")},
-            "3-semantic": {**base, "s2config_path": str(s2cfg), "s2model_path": str(pre["s2G"])},
-            "4-sovits": {
-                "exp_name": self.exp, "gpu_numbers1Ba": "0",
-                "batch_size": str(self.cfg["batch_size"]),
-                "total_epoch": str(self.cfg["s2_total_epoch"]),
-                "text_low_lr_rate": str(self.cfg["text_low_lr_rate"]),
-                "if_save_latest": "1", "if_save_every_weights": "1",
-                "save_every_epoch": str(self.cfg["save_every_epoch"]),
-                "if_freeze": "0", "version": self._engine_version(engine),
-                "opt_dir": str(opt_dir), "pretrained_s2G": str(pre["s2G"]),
-                "pretrained_s2D": str(pre["s2D"]), "s2config_path": str(s2cfg),
-                "is_half": "false",
-            },
-            "5-gpt": {
-                "exp_name": self.exp, "gpu_numbers1B2": "0",
-                "total_epoch": str(self.cfg["s1_total_epoch"]),
-                "if_save_latest": "1", "if_save_every_weights": "1",
-                "save_every_epoch": str(self.cfg["save_every_epoch"]),
-                "if_dpo": "0", "opt_dir": str(opt_dir),
-                "s1pretrained_path": str(pre["s1"]), "s1config_path": str(s1cfg),
-                "is_half": "false",
-            },
+            "i_part": "0",
+            "all_parts": "1",
+            "_CUDA_VISIBLE_DEVICES": "0",
+            "is_half": "False",
         }
 
-        runnable = [(s, f) for s, f in self.STAGES
-                    if self.only is None or s in self.only]
-        for i, (stage, script) in enumerate(runnable, 1):
+        # (阶段名, 引擎相对脚本, 环境变量, 阶段后合并函数)
+        def merge(pattern: str, target: str):
+            def _merge() -> None:
+                src = opt_dir / pattern.format(0)
+                dst = opt_dir / target
+                if src.is_file():
+                    dst.write_text(src.read_text("utf-8"), encoding="utf-8")
+                    src.unlink(missing_ok=True)
+            return _merge
+
+        need_sv = version in SV_VERSIONS
+        stages: list[tuple[str, str, dict, object]] = [
+            ("1-text", "GPT_SoVITS/prepare_datasets/1-get-text.py",
+             {**base_env, "bert_pretrained_dir": str(pre["bert"])},
+             merge("2-name2text-{}.txt", "2-name2text.txt")),
+            ("2-hubert-wav32k", "GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py",
+             {**base_env, "cnhubert_base_dir": str(pre["hubert"]), "sv_path": str(pre["sv"])},
+             None),
+        ]
+        if need_sv:
+            stages.append(
+                ("2-sv", "GPT_SoVITS/prepare_datasets/2-get-sv.py",
+                 {**base_env, "cnhubert_base_dir": str(pre["hubert"]), "sv_path": str(pre["sv"])},
+                 None))
+        stages.append(
+            ("3-semantic", "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
+             {**base_env, "pretrained_s2G": str(pre["s2G"]),
+              "s2config_path": str(pre["s2config"])},
+             merge("6-name2semantic-{}.tsv", "6-name2semantic.tsv")))
+        stages.append(("4-sovits", S2_SCRIPT_BY_VERSION[version], None, None))
+        stages.append(("5-gpt", "GPT_SoVITS/s1_train.py", None, None))
+
+        runnable = [s for s in stages if self.only is None or s[0] in self.only]
+        total = len(runnable)
+        for i, (stage, script, env, after) in enumerate(runnable, 1):
             if self.cancelled.is_set():
                 self.shared.set_tr("已取消", "停止")
                 return
             full = engine / script
             if not full.is_file():
-                raise TrainError(f"引擎缺少训练脚本：{script}（版本不匹配？）")
-            self.shared.set_tr(stage, f"阶段 {i}/{len(runnable)}", i - 1, len(runnable))
-            self.shared.log(f"[训练] 阶段 {i}/{len(runnable)}：{stage}（{script}）")
-            env = {**os.environ, **{k: str(v) for k, v in envs[stage].items()}}
-            self.proc = subprocess.Popen(
-                [str(py), script], cwd=str(engine), env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                creationflags=WIN_SILENT,
-            )
+                raise TrainError(f"引擎缺少训练脚本：{script}")
+            self.shared.set_tr(stage, f"阶段 {i}/{total}", i - 1, total)
+            self.shared.log(f"[训练] 阶段 {i}/{total}：{stage}")
+
+            if env is not None:  # prepare 阶段：环境变量契约
+                self.proc = subprocess.Popen(
+                    [str(py), "-s", script], cwd=str(engine),
+                    env={**os.environ, **env},
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    creationflags=WIN_SILENT,
+                )
+            elif stage == "4-sovits":  # s2_train：JSON 配置契约
+                cfg_path = self._build_s2_config(engine, temp_dir, pre, opt_dir)
+                self.proc = subprocess.Popen(
+                    [str(py), "-s", script, "--config", str(cfg_path)],
+                    cwd=str(engine), stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, creationflags=WIN_SILENT,
+                )
+            else:  # s1_train：YAML 配置契约
+                cfg_path = self._build_s1_config(engine, temp_dir, pre, opt_dir)
+                self.proc = subprocess.Popen(
+                    [str(py), "-s", script, "--config_file", str(cfg_path)],
+                    cwd=str(engine), env={**os.environ, "hz": "25hz",
+                                          "_CUDA_VISIBLE_DEVICES": "0"},
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    creationflags=WIN_SILENT,
+                )
+
             for raw in self.proc.stdout:  # type: ignore[union-attr]
                 line = raw.decode("utf-8", "replace").rstrip()
                 if line.strip():
@@ -178,26 +250,75 @@ class Trainer(threading.Thread):
                 return
             if rc != 0:
                 raise TrainError(f"阶段 {stage} 退出码 {rc}（详见上方日志）")
-            self.shared.set_tr(stage, "完成", i, len(runnable))
+            if after is not None:
+                after()
+            self.shared.set_tr(stage, "完成", i, total)
 
-        # 产物
-        w2 = self._newest(opt_dir / "SoVITS_weights_v2", "*.pth") or \
-            self._newest(opt_dir / "SoVITS_weights", "*.pth")
-        w1 = self._newest(opt_dir / "GPT_weights_v2", "*.ckpt") or \
-            self._newest(opt_dir / "GPT_weights", "*.ckpt")
+        sv_root = engine / SOVITS_WEIGHT_VERSION2ROOT[version]
+        gp_root = engine / GPT_WEIGHT_VERSION2ROOT[version]
+        w2 = self._newest(sv_root, "*.pth")
+        w1 = self._newest(gp_root, "*.ckpt")
         if w2:
             self.shared.log(f"[训练] SoVITS 权重：{w2}")
         if w1:
             self.shared.log(f"[训练] GPT 权重：{w1}")
         self.shared.set_tr("完成", "训练结束，可在「声线卡」页打包")
 
-    @staticmethod
-    def _engine_version(engine: Path) -> str:
-        if (engine / "pretrained_models" / "gsv-v2pro-pretrained").is_dir():
-            return "v2Pro"
-        if (engine / "pretrained_models" / "gsv-v2final-pretrained").is_dir():
-            return "v2"
-        return "v1"
+    # -- s2_train JSON 配置（与 webui.open1Ba 逐键一致） -------------------------
+    def _build_s2_config(self, engine: Path, temp_dir: Path, pre: dict, opt_dir: Path) -> Path:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        version = pre["version"]
+        bs = max(1, int(self.cfg["batch_size"]) // 2)  # webui：CPU(fp16 off) 时减半
+        data = json.loads(pre["s2config"].read_text("utf-8"))
+        data["train"].update({
+            "fp16_run": False,
+            "batch_size": bs,
+            "epochs": int(self.cfg["s2_total_epoch"]),
+            "text_low_lr_rate": float(self.cfg["text_low_lr_rate"]),
+            "pretrained_s2G": str(pre["s2G"]),
+            "pretrained_s2D": str(pre["s2D"]),
+            "if_save_latest": True,
+            "if_save_every_weights": True,
+            "save_every_epoch": int(self.cfg["save_every_epoch"]),
+            "gpu_numbers": "0",
+            "grad_ckpt": False,
+            "lora_rank": 8,
+        })
+        data["model"]["version"] = version
+        data["data"]["exp_dir"] = data["s2_ckpt_dir"] = str(opt_dir)
+        data["save_weight_dir"] = SOVITS_WEIGHT_VERSION2ROOT[version]
+        data["name"] = self.exp
+        data["version"] = version
+        out = temp_dir / "tmp_s2.json"
+        out.write_text(json.dumps(data), encoding="utf-8")
+        return out
+
+    # -- s1_train YAML 配置（与 webui.open1Bb 逐键一致） -------------------------
+    def _build_s1_config(self, engine: Path, temp_dir: Path, pre: dict, opt_dir: Path) -> Path:
+        import yaml  # noqa: PLC0415
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        version = pre["version"]
+        bs = max(1, int(self.cfg["batch_size"]) // 2)
+        data = yaml.safe_load(pre["s1config"].read_text("utf-8"))
+        data["train"].update({
+            "precision": "32",
+            "batch_size": bs,
+            "epochs": int(self.cfg["s1_total_epoch"]),
+            "save_every_n_epoch": int(self.cfg["save_every_epoch"]),
+            "if_save_every_weights": True,
+            "if_save_latest": True,
+            "if_dpo": False,
+            "half_weights_save_dir": GPT_WEIGHT_VERSION2ROOT[version],
+            "exp_name": self.exp,
+        })
+        data["pretrained_s1"] = str(pre["s1"])
+        data["train_semantic_path"] = str(opt_dir / "6-name2semantic.tsv")
+        data["train_phoneme_path"] = str(opt_dir / "2-name2text.txt")
+        data["output_dir"] = str(opt_dir / f"logs_s1_{version}")
+        out = temp_dir / "tmp_s1.yaml"
+        out.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False),
+                       encoding="utf-8")
+        return out
 
     @staticmethod
     def _newest(d: Path, pat: str) -> Path | None:

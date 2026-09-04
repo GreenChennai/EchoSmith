@@ -22,13 +22,15 @@ class RefRow:
 
 
 def scan_weights(engine: Path, exp: str) -> dict[str, list[Path]]:
-    """扫描 logs/<exp> 下的训练产物（兼容 v2/v2Pro 与 v1 目录名）。"""
+    """扫描 logs/<exp> 下的训练产物（覆盖全部版本权重目录）。"""
     out: dict[str, list[Path]] = {"sovits": [], "gpt": []}
-    for sub in ("SoVITS_weights_v2", "SoVITS_weights"):
+    for sub in ("SoVITS_weights_v2ProPlus", "SoVITS_weights_v2Pro", "SoVITS_weights_v4",
+                "SoVITS_weights_v3", "SoVITS_weights_v2", "SoVITS_weights"):
         d = engine / "logs" / exp / sub
         if d.is_dir():
             out["sovits"].extend(sorted(d.glob("*.pth"), key=lambda p: p.stat().st_mtime))
-    for sub in ("GPT_weights_v2", "GPT_weights"):
+    for sub in ("GPT_weights_v2ProPlus", "GPT_weights_v2Pro", "GPT_weights_v4",
+                "GPT_weights_v3", "GPT_weights_v2", "GPT_weights"):
         d = engine / "logs" / exp / sub
         if d.is_dir():
             out["gpt"].extend(sorted(d.glob("*.ckpt"), key=lambda p: p.stat().st_mtime))

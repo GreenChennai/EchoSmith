@@ -14,7 +14,7 @@
 - **遇错即停**：任一步失败立即停止并给出原因，不自动重试
 - **干净落盘**：`models/datasets/<名称>/`（clips/ + <名称>.list）、声线卡落 `models/voices/<名>/card.json`，中间文件自动清理
 
-> ⚠️ 训练编排与 UVR5 走的是整合包内部接口（webui 环境变量契约 / uvr5 lib），**需引擎到位后真机联调**；接口随引擎版本变动时错误信息会原样透出便于适配。
+> ⚠️ 训练编排与 UVR5 走的是整合包内部接口（webui 环境变量契约 / uvr5 lib）。**v0.2.1 起已逐行对照 GPT-SoVITS 官方源码核验**（prepare_datasets 环境变量契约含 i_part/all_parts 分片与合并、s2_train 的 JSON 配置契约、s1_train 的 YAML 配置契约、uvr5 `vr.py` 的 `_path_audio_(inp, ins_root, vocal_root, format, is_hp3)` 签名与 `vocal_<name>_<agg>.wav` 产物命名、v2Pro 的 sv 模型阶段）；引擎版本再演进时错误信息会原样透出便于适配。
 
 ## 路线图
 

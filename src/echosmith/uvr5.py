@@ -22,35 +22,38 @@ DRIVER_NAME = "_echosmith_uvr5.py"
 DRIVER_SRC = '''# -*- coding: utf-8 -*-
 # EchoSmith 注入的 UVR5 驱动（CPU）。用法:
 #   runtime/python.exe _echosmith_uvr5.py <input_wav> <vocal_dir> <ins_dir>
+# 契约对照 RVC-Boss/GPT-SoVITS main：tools/uvr5/vr.py
+#   AudioPre.__init__(agg, model_path, device, is_half, tta=False)
+#   _path_audio_(music_file, ins_root, vocal_root, format="flac", is_hp3=False)
+#   产物命名：vocal_root/vocal_<basename>_<agg>.wav
 import os, sys, traceback
 root = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, root)
-sys.path.append(os.path.join(root, "GPT_SoVITS"))
+sys.path.insert(0, os.path.join(root, "tools", "uvr5"))
 inp, vocal_dir, ins_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-agg = 10
 W = os.path.join(root, "tools", "uvr5", "uvr5_weights")
 
-def run(model_path, cls_name):
-    mod = __import__("tools.uvr5.lib.lib_5_0", fromlist=["lib_5_0"])
-    cls = getattr(mod, cls_name)
-    m = cls(agg, model_path, device="cpu", is_half=False)
-    m._path_audio_(inp, None, vocal_dir, ins_dir, "wav")
+def run(model_file, cls_name, is_hp3):
+    import vr
+    cls = getattr(vr, cls_name)
+    m = cls(agg=10, model_path=os.path.join(W, model_file),
+            device="cpu", is_half=False)
+    m._path_audio_(inp, ins_dir, vocal_dir, "wav", is_hp3)
 
 errs = []
-for cls_name, weight in [
-    ("AudioPre", os.path.join(W, "HP5_only_main_vocal.pth")),
-    ("AudioPre", os.path.join(W, "HP2_all_vocals.pth")),
-    ("AudioPreDeEcho", os.path.join(W, "VR-DeEchoAggressive.pth")),
+for model_file, cls_name in [
+    ("HP5_only_main_vocal.pth", "AudioPre"),
+    ("HP2_all_vocals.pth", "AudioPre"),
+    ("VR-DeEchoAggressive.pth", "AudioPreDeEcho"),
 ]:
-    if not os.path.isfile(weight):
-        errs.append(f"{cls_name}: 权重缺失 {weight}")
+    if not os.path.isfile(os.path.join(W, model_file)):
+        errs.append(f"{model_file}: 权重缺失")
         continue
     try:
-        run(weight, cls_name)
+        run(model_file, cls_name, "HP3" in model_file)
         print("UVR5_OK")
         sys.exit(0)
     except Exception:
-        errs.append(f"{cls_name}({os.path.basename(weight)}):\\n{traceback.format_exc()}")
+        errs.append(f"{cls_name}({model_file}):\\n{traceback.format_exc()}")
 print("UVR5_ALL_FAILED")
 for e in errs:
     print(e)

@@ -22,6 +22,7 @@ models/*.7z
 models/*.part
 
 # 本机
+.engine_ref/
 .idea/
 .vscode/
 models/voices/*
