@@ -6,7 +6,13 @@ from pathlib import Path
 
 from .config import Config
 from .ffmpeg_util import extract_audio, probe_duration
-from .labeler import LabelerError, check_service, transcribe, write_list
+from .labeler import (
+    LabelerError,
+    check_service,
+    transcribe,
+    transcribe_engine_batch,
+    write_list,
+)
 from .slicer import build_segments, detect_silences
 from .state import Shared
 
@@ -92,21 +98,26 @@ class Pipeline(threading.Thread):
             shared.set_pl("切片", f"{i}/{len(segs)}", i, len(segs))
 
         # 4. 打标 ------------------------------------------------------------
-        if not check_service(cfg):
-            raise LabelerError(
-                f"本地 FunASR 服务不可达（{cfg['funasr_url']}）。"
-                "请启动 MomentShift 的 FunASR 服务模式后再试。"
-            )
         shared.set_pl("打标", "进行中", 0, len(clips))
         entries: list[tuple[Path, str]] = []
-        for i, clip in enumerate(clips, 1):
-            if self.cancelled.is_set():
-                shared.log("[流水线] 已取消")
-                shared.set_pl("已取消", "停止")
-                return
-            text = transcribe(cfg, clip)
-            entries.append((clip, text))
-            shared.set_pl("打标", f"{i}/{len(clips)}", i, len(clips))
+        if check_service(cfg):
+            for i, clip in enumerate(clips, 1):
+                if self.cancelled.is_set():
+                    shared.log("[流水线] 已取消")
+                    shared.set_pl("已取消", "停止")
+                    return
+                text = transcribe(cfg, clip)
+                entries.append((clip, text))
+                shared.set_pl("打标", f"{i}/{len(clips)}", i, len(clips))
+        else:
+            # 回退：引擎整合包自带 funasr 批量转写（无需外部服务）
+            shared.log("[流水线] FunASR 服务不可达，回退引擎内置 funasr 批量转写")
+            texts = transcribe_engine_batch(cfg, clips, str(cfg["language"]))
+            for clip in clips:
+                if clip.resolve() not in texts:
+                    raise LabelerError(f"{clip.name} 引擎转写失败（无产出）")
+                entries.append((clip, texts[clip.resolve()]))
+            shared.log(f"[流水线] 引擎内置 funasr 完成 {len(entries)} 条")
 
         # 5. 写训练清单 ---------------------------------------------------------
         list_path = ds_root / f"{name}.list"
