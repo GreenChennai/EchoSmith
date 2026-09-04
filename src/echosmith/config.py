@@ -28,6 +28,14 @@ DEFAULTS = {
     # 数据集标注
     "speaker": "speaker0",
     "language": "ZH",
+    # 训练参数（CPU 基线取小值）
+    "s2_total_epoch": 8,
+    "s1_total_epoch": 15,
+    "batch_size": 6,
+    "text_low_lr_rate": 0.4,
+    "save_every_epoch": 4,
+    # 声线卡输出目录（EchoRunner 兼容格式）
+    "voices_dir": "models/voices",
 }
 
 

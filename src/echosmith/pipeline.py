@@ -16,12 +16,14 @@ class PipelineError(RuntimeError):
 
 
 class Pipeline(threading.Thread):
-    def __init__(self, cfg: Config, shared: Shared, src: Path, dataset_name: str) -> None:
+    def __init__(self, cfg: Config, shared: Shared, src: Path, dataset_name: str,
+                 separate_vocals: bool = False) -> None:
         super().__init__(name="echosmith-pipeline", daemon=True)
         self.cfg = cfg
         self.shared = shared
         self.src = src
         self.dataset_name = dataset_name
+        self.separate_vocals = separate_vocals
         self.cancelled = threading.Event()
 
     def run(self) -> None:
@@ -46,9 +48,18 @@ class Pipeline(threading.Thread):
 
         # 1. 提音轨 ---------------------------------------------------------
         shared.set_pl("提音轨", "进行中", 0, 1)
-        wav32k = ds_root / "source_32k.wav"
-        extract_audio(cfg, self.src, wav32k)
-        shared.log(f"[流水线] 音轨就绪：{wav32k.name}")
+        source_wav = ds_root / "source_32k.wav"
+        extract_audio(cfg, self.src, source_wav)
+        shared.log(f"[流水线] 音轨就绪：{source_wav.name}")
+        wav32k = source_wav
+
+        # 1.5 可选：UVR5 人声分离 ---------------------------------------------
+        if self.separate_vocals:
+            from .uvr5 import separate  # noqa: PLC0415
+            shared.set_pl("人声分离", "进行中", 0, 1)
+            vocal = separate(cfg, shared, wav32k)
+            source_wav.unlink(missing_ok=True)  # 原始混合音轨不再需要
+            wav32k = vocal
 
         # 2. 静音检测 + 切分 --------------------------------------------------
         shared.set_pl("静音检测", "进行中", 0, 1)
@@ -103,5 +114,5 @@ class Pipeline(threading.Thread):
         shared.set_last_dataset(str(ds_root))
         shared.set_pl("完成", f"{len(entries)} 条 → {list_path.name}")
         shared.log(f"[流水线] 完成：{list_path}（{len(entries)} 条标注）")
-        # 清理中间长音频，保持目录干净
-        wav32k.unlink(missing_ok=True)
+        # 清理中间长音频（仅原始混合音轨），保持目录干净
+        source_wav.unlink(missing_ok=True)

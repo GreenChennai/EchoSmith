@@ -24,3 +24,5 @@ models/*.part
 # 本机
 .idea/
 .vscode/
+models/voices/*
+!models/voices/.gitkeep

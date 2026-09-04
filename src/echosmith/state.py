@@ -19,6 +19,11 @@ class Shared:
         self.pl_stage = ""
         self.pl_index = 0
         self.pl_total = 0
+        # 训练
+        self.tr_stage = "空闲"
+        self.tr_status = ""
+        self.tr_index = 0
+        self.tr_total = 0
         self.error = ""
         self.last_dataset = ""
 
@@ -52,6 +57,17 @@ class Shared:
             if total >= 0:
                 self.pl_total = total
 
+    # 训练进度
+    def set_tr(self, stage: str, status: str = "", index: int = -1, total: int = -1) -> None:
+        with self.lock:
+            self.tr_stage = stage
+            if status:
+                self.tr_status = status
+            if index >= 0:
+                self.tr_index = index
+            if total >= 0:
+                self.tr_total = total
+
     def set_last_dataset(self, d: str) -> None:
         with self.lock:
             self.last_dataset = d
@@ -64,5 +80,6 @@ class Shared:
                 "error": self.error,
                 "dl": (self.dl_status, self.dl_bytes, self.dl_total, self.dl_speed),
                 "pl": (self.pl_stage, self.pl_status, self.pl_index, self.pl_total),
+                "tr": (self.tr_stage, self.tr_status, self.tr_index, self.tr_total),
                 "last_dataset": self.last_dataset,
             }

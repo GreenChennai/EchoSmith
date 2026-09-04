@@ -13,6 +13,7 @@ from ..downloader import DownloadTask, load_manifest, valid_engine
 from ..fontutil import load_cjk_font
 from ..pipeline import Pipeline
 from ..state import Shared
+from ..trainer import Trainer
 
 T_PKG, T_DL_BAR, T_DL_STATUS, T_ENG_VALID = "pkg", "dl_bar", "dl_status", "eng_valid"
 T_SRC, T_DSNAME, T_PL_STAGE, T_PL_BAR, T_PL_STATUS, T_LASTDS = (
@@ -21,6 +22,11 @@ T_FFMPEG, T_FUNASR_URL, T_FUNASR_MODEL = "ffmpeg", "funasr_url", "funasr_model"
 T_MINCLIP, T_MAXCLIP, T_SDB, T_SDUR, T_SPEAKER, T_LANG = (
     "minclip", "maxclip", "sdb", "sdur", "speaker", "lang")
 T_LOG, T_ERR, T_BTN_DL, T_BTN_PL = "log", "err", "btn_dl", "btn_pl"
+T_SEPARATE = "separate"
+T_DS_COMBO, T_EXP, T_S2EP, T_S1EP, T_BS = "ds_combo", "exp", "s2ep", "s1ep", "bs"
+T_TR_STAGE, T_TR_BAR, T_TR_STATUS, T_BTN_TRAIN = "tr_stage", "tr_bar", "tr_status", "btn_train"
+T_CARD_EXP, T_CARD_NAME, T_CARD_DEF, T_CARD_ROWS, T_CARD_STATUS = (
+    "card_exp", "card_name", "card_def", "card_rows", "card_status")
 
 
 class App:
@@ -30,6 +36,8 @@ class App:
         self.packages: list[dict] = []
         self.dl_task: DownloadTask | None = None
         self.pl_task: Pipeline | None = None
+        self.trainer: Trainer | None = None
+        self.card_rows: list[dict] = []
         self._picking = False
         self._src_file = ""
 
@@ -52,6 +60,8 @@ class App:
             self.dl_task.cancelled.set()
         if self.pl_task and self.pl_task.is_alive():
             self.pl_task.cancelled.set()
+        if self.trainer and self.trainer.is_alive():
+            self.trainer.cancel()
 
     # ------------------------------------------------------------ build ui
     def _build(self) -> None:
@@ -61,6 +71,10 @@ class App:
                     self._build_engine_tab()
                 with dpg.tab(label="素材流水线"):
                     self._build_pipeline_tab()
+                with dpg.tab(label="训练"):
+                    self._build_train_tab()
+                with dpg.tab(label="声线卡"):
+                    self._build_card_tab()
                 with dpg.tab(label="设置"):
                     self._build_settings_tab()
                 with dpg.tab(label="日志"):
@@ -109,10 +123,154 @@ class App:
         dpg.add_text("空闲", tag=T_PL_STATUS, color=(160, 160, 160))
         dpg.add_text("", tag=T_LASTDS, color=(140, 140, 140), wrap=950)
         dpg.add_spacer(height=4)
+        dpg.add_spacer(height=4)
+        dpg.add_checkbox(tag=T_SEPARATE, label="先做人声/背景音分离（UVR5，需引擎就绪，人声干净素材可不勾）")
         dpg.add_text("", tag=T_ERR, color=(232, 84, 84), wrap=950)
         dpg.add_spacer(height=4)
-        dpg.add_text("注：人声/背景音分离（UVR5）将在训练功能（M3）中随引擎一并启用；"
-                     "当前流水线适合人声较干净的素材。", color=(170, 150, 90))
+        dpg.add_text("注：切分/打标参数在「设置」页调整。", color=(170, 150, 90))
+
+    def _build_train_tab(self) -> None:
+        dpg.add_text("数据集 → prepare_datasets×3 → SoVITS(s2) → GPT(s1)，CPU 单卡模式",
+                     color=(160, 160, 160))
+        with dpg.group(horizontal=True):
+            dpg.add_text("训练清单")
+            dpg.add_combo([], tag=T_DS_COMBO, width=380)
+            dpg.add_button(label="刷新", callback=lambda: self._refresh_datasets())
+        with dpg.group(horizontal=True):
+            dpg.add_text("实验名")
+            dpg.add_input_text(tag=T_EXP, width=180, hint="与数据集同名即可")
+            dpg.add_text("SoVITS 轮数")
+            dpg.add_input_int(tag=T_S2EP, width=90)
+            dpg.add_text("GPT 轮数")
+            dpg.add_input_int(tag=T_S1EP, width=90)
+            dpg.add_text("批大小")
+            dpg.add_input_int(tag=T_BS, width=90)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="开始训练", tag=T_BTN_TRAIN, callback=self._start_train)
+            dpg.add_button(label="停止", callback=self._cancel_train)
+        dpg.add_spacer(height=6)
+        dpg.add_text("", tag=T_TR_STAGE)
+        dpg.add_progress_bar(tag=T_TR_BAR, default_value=0.0, width=-1, overlay="—")
+        dpg.add_text("空闲", tag=T_TR_STATUS, color=(160, 160, 160))
+        dpg.add_spacer(height=4)
+        dpg.add_text("CPU 训练耗时以分钟~小时计；轮数/批大小在「设置」页可调，日志实时滚到「日志」页。",
+                     color=(170, 150, 90))
+
+    def _build_card_tab(self) -> None:
+        dpg.add_text("训练产物 + 参考音频 → card.json（EchoRunner 声线卡，落 models/voices/）",
+                     color=(160, 160, 160))
+        with dpg.group(horizontal=True):
+            dpg.add_text("实验名")
+            dpg.add_input_text(tag=T_CARD_EXP, width=180, hint="如 xiaoyu")
+            dpg.add_button(label="扫描权重", callback=self._scan_weights)
+            dpg.add_text("声线名")
+            dpg.add_input_text(tag=T_CARD_NAME, width=140)
+            dpg.add_text("默认情感")
+            dpg.add_input_text(tag=T_CARD_DEF, width=110)
+        dpg.add_text("权重：未扫描", tag=T_CARD_STATUS, color=(160, 160, 160), wrap=950)
+        dpg.add_spacer(height=4)
+        dpg.add_separator()
+        dpg.add_text("参考音频（每行 = 一种情感；路径相对引擎目录或绝对路径）",
+                     color=(160, 160, 160))
+        with dpg.child_window(tag=T_CARD_ROWS, height=220):
+            pass
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="+ 添加情感行", callback=self._add_card_row)
+            dpg.add_button(label="生成 card.json", callback=self._generate_card)
+        dpg.add_spacer(height=4)
+        dpg.add_text("参考音频建议 3~10 秒、人声干净；prompt_text 填该音频里说的原话，越准克隆越稳。",
+                     color=(170, 150, 90))
+
+    def _card_row_widget(self, row: dict) -> None:
+        with dpg.group(horizontal=True, parent=T_CARD_ROWS):
+            row["label"] = dpg.add_input_text(width=90, hint="情感标签")
+            row["ref"] = dpg.add_input_text(width=420, hint="参考音频路径")
+            dpg.add_button(label="选择…",
+                           callback=lambda s, a, u=row: self._pick_ref_audio(u))
+            row["prompt"] = dpg.add_input_text(width=320, hint="该音频里说的原话")
+
+    def _add_card_row(self) -> None:
+        row: dict = {}
+        self._card_row_widget(row)
+        self.card_rows.append(row)
+
+    def _pick_ref_audio(self, row: dict) -> None:
+        if self._picking:
+            return
+        self._picking = True
+
+        def _cb(sender, app_data):
+            self._picking = False
+            path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+            if path:
+                dpg.set_value(row["ref"], path)
+
+        dpg.add_file_dialog(directory_selector=False, show_label=False, modal=True,
+                            callback=_cb,
+                            cancel_callback=lambda *a: setattr(self, "_picking", False))
+
+    def _scan_weights(self) -> None:
+        from ..card_gen import scan_weights  # noqa: PLC0415
+        exp = dpg.get_value(T_CARD_EXP).strip()
+        if not exp:
+            dpg.set_value(T_CARD_STATUS, "请先填实验名")
+            return
+        w = scan_weights(self.cfg.engine_path, exp)
+        sv = w["sovits"][-1].name if w["sovits"] else "—"
+        gp = w["gpt"][-1].name if w["gpt"] else "—"
+        self._weights_ok = bool(w["sovits"] and w["gpt"])
+        dpg.set_value(T_CARD_STATUS, f"SoVITS 最新：{sv}　|　GPT 最新：{gp}")
+
+    _weights_ok = False
+
+    def _generate_card(self) -> None:
+        from ..card_gen import RefRow, build_card  # noqa: PLC0415
+        rows = [RefRow(
+            label=dpg.get_value(r["label"]),
+            ref=dpg.get_value(r["ref"]).strip(),
+            prompt_text=dpg.get_value(r["prompt"]).strip(),
+        ) for r in self.card_rows]
+        try:
+            out = build_card(
+                self.cfg, self.cfg.engine_path,
+                exp=dpg.get_value(T_CARD_EXP).strip(),
+                voice_name=dpg.get_value(T_CARD_NAME),
+                default_emotion=dpg.get_value(T_CARD_DEF),
+                rows=rows,
+            )
+            self.shared.log(f"[声线卡] 已生成：{out}")
+            dpg.set_value(T_CARD_STATUS, f"card.json 已生成 ✔ {out}")
+        except Exception as e:  # CardError 等直接透出
+            self.shared.set_error(str(e))
+            dpg.set_value(T_CARD_STATUS, f"生成失败：{e}")
+
+    def _refresh_datasets(self) -> None:
+        lists = sorted(self.cfg.dataset_path.glob("*/*.list"))
+        items = [p.as_posix() for p in lists]
+        dpg.configure_item(T_DS_COMBO, items=items,
+                           default_value=items[0] if items else "")
+        self.shared.log(f"[训练] 找到 {len(items)} 个训练清单")
+
+    def _start_train(self) -> None:
+        dpg.set_value(T_ERR, "")
+        self.shared.set_error("")
+        list_path = dpg.get_value(T_DS_COMBO).strip()
+        if not list_path:
+            dpg.set_value(T_ERR, "没有训练清单：先在「素材流水线」产出数据集")
+            return
+        if self.trainer and self.trainer.is_alive():
+            dpg.set_value(T_ERR, "已有训练在运行")
+            return
+        self.cfg["s2_total_epoch"] = max(1, int(dpg.get_value(T_S2EP)))
+        self.cfg["s1_total_epoch"] = max(1, int(dpg.get_value(T_S1EP)))
+        self.cfg["batch_size"] = max(1, int(dpg.get_value(T_BS)))
+        exp = dpg.get_value(T_EXP).strip() or Path(list_path).stem
+        self.trainer = Trainer(self.cfg, self.shared, Path(list_path), exp)
+        self.trainer.start()
+
+    def _cancel_train(self) -> None:
+        if self.trainer and self.trainer.is_alive():
+            self.trainer.cancel()
 
     def _build_settings_tab(self) -> None:
         with dpg.group(horizontal=True):
@@ -174,6 +332,13 @@ class App:
         dpg.set_value(T_PL_STATUS, plstatus)
         dpg.set_value(T_LASTDS, f"最近数据集：{s['last_dataset']}" if s["last_dataset"] else "")
         dpg.set_value(T_ERR, s["error"])
+        # 训练
+        tr_stage, tr_status, tr_idx, tr_tot = s["tr"]
+        dpg.set_value(T_TR_STAGE, f"阶段：{tr_stage}" if tr_stage else "")
+        tpct = (tr_idx / tr_tot) if tr_tot else 0.0
+        dpg.set_value(T_TR_BAR, tpct)
+        dpg.configure_item(T_TR_BAR, overlay=f"{tr_idx}/{tr_tot}" if tr_tot else "—")
+        dpg.set_value(T_TR_STATUS, tr_status)
         # 日志
         lines = s["app_log"]
         children = dpg.get_item_children(T_LOG, 1)
@@ -288,7 +453,8 @@ class App:
             dpg.set_value(T_ERR, "已有流水线在运行")
             return
         self.pl_task = Pipeline(self.cfg, self.shared, Path(src),
-                                dpg.get_value(T_DSNAME).strip())
+                                dpg.get_value(T_DSNAME).strip(),
+                                separate_vocals=bool(dpg.get_value(T_SEPARATE)))
         self.pl_task.start()
 
     def _cancel_pipeline(self) -> None:
@@ -315,6 +481,9 @@ class App:
         dpg.set_value(T_MAXCLIP, int(self.cfg["max_clip_ms"]))
         dpg.set_value(T_SDB, int(self.cfg["silence_db"]))
         dpg.set_value(T_SDUR, float(self.cfg["silence_min_dur"]))
+        dpg.set_value(T_S2EP, int(self.cfg["s2_total_epoch"]))
+        dpg.set_value(T_S1EP, int(self.cfg["s1_total_epoch"]))
+        dpg.set_value(T_BS, int(self.cfg["batch_size"]))
 
     def _save_settings(self) -> None:
         self.cfg["ffmpeg_path"] = dpg.get_value(T_FFMPEG).strip()
