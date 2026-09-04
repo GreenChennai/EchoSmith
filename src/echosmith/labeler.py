@@ -69,6 +69,10 @@ def transcribe_engine_batch(cfg: Config, clips: list[Path], lang: str = "zh") ->
     clips_dir = clips[0].resolve().parent
     if any(c.resolve().parent != clips_dir for c in clips):
         raise LabelerError("引擎批量转写要求所有切片位于同一目录")
+    # 引擎 funasr_asr 的 -l 只认 zh/yue/auto；EchoSmith 配置里是大写 ZH
+    lang = lang.lower() if lang else "zh"
+    if lang not in ("zh", "yue", "auto"):
+        lang = "zh"
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     with tempfile.TemporaryDirectory(prefix="echosmith_asr_") as td:
         cmd = [
@@ -85,7 +89,7 @@ def transcribe_engine_batch(cfg: Config, clips: list[Path], lang: str = "zh") ->
             raise LabelerError(f"引擎 funasr 子进程失败：{e}") from e
         list_file = Path(td) / f"{clips_dir.name}.list"
         if not list_file.is_file():
-            tail = (proc.stdout or "")[-400:]
+            tail = ((proc.stderr or "") + "\n" + (proc.stdout or ""))[-400:]
             raise LabelerError(f"引擎 funasr 未产出标注文件（返回码 {proc.returncode}）\n{tail}")
         texts: dict[Path, str] = {}
         for line in list_file.read_text("utf-8").splitlines():
