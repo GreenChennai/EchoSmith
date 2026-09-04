@@ -7,10 +7,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config
+from .ffmpeg_util import probe_duration
 
 
 class CardError(RuntimeError):
     pass
+
+
+# GPT-SoVITS api_v2 对参考音频的硬性要求：3~10 秒
+REF_MIN_S, REF_MAX_S = 3.0, 10.0
 
 
 @dataclass
@@ -71,6 +76,25 @@ def build_card(cfg: Config, engine: Path, exp: str, voice_name: str,
     good_rows = [r for r in rows if r.label.strip() and r.ref.strip()]
     if not good_rows:
         raise CardError("至少需要一条参考音频（情感标签 + 文件）")
+    # api_v2 要求参考音频 3~10 秒，越界的参考音频合成时必失败——生成期就拦下
+    usable: list[RefRow] = []
+    for r in good_rows:
+        p = Path(r.ref)
+        if not p.is_absolute():
+            p = engine / p
+        try:
+            dur = probe_duration(cfg, p)
+        except Exception:
+            raise CardError(f"参考音频不可读：{r.ref}")
+        if dur < REF_MIN_S or dur > REF_MAX_S:
+            continue
+        usable.append(r)
+    if not usable:
+        raise CardError(
+            f"所有参考音频都不在 {REF_MIN_S:.0f}~{REF_MAX_S:.0f} 秒范围内"
+            "（api_v2 硬性要求），请换用训练集里时长合规的切片"
+        )
+    good_rows = usable
     labels = [r.label.strip() for r in good_rows]
     if len(labels) != len(set(labels)):
         raise CardError("情感标签有重复")
