@@ -68,6 +68,26 @@ class TrainError(RuntimeError):
     pass
 
 
+# 整合包 runtime 是 embeddable Python（python39._pth），PYTHONPATH 会被无视；
+# 用 runpy 启动器把引擎根与 GPT_SoVITS/ 注入 sys.path 后再执行目标脚本。
+LAUNCHER_NAME = "_echosmith_run.py"
+LAUNCHER_SRC = '''# -*- coding: utf-8 -*-
+# EchoSmith 注入的启动器：用法 python _echosmith_run.py <target.py> [args...]
+import os
+import runpy
+import sys
+
+root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, root)
+gs = os.path.join(root, "GPT_SoVITS")
+if os.path.isdir(gs):
+    sys.path.insert(0, gs)
+target = sys.argv[1]
+sys.argv = [target] + sys.argv[2:]
+runpy.run_path(target, run_name="__main__")
+'''
+
+
 def detect_version_and_pretrains(engine: Path) -> dict:
     """按官方 config.py 的命名探测版本与预训练权重。"""
     pm = engine / "GPT_SoVITS" / "pretrained_models"
@@ -152,16 +172,23 @@ class Trainer(threading.Thread):
         version = pre["version"]
         opt_dir = engine / "logs" / self.exp
         opt_dir.mkdir(parents=True, exist_ok=True)
+        # webui 训练前预创建存档目录（my_save 不会自建）
+        (opt_dir / f"logs_s2_{version}").mkdir(parents=True, exist_ok=True)
+        (opt_dir / f"logs_s1_{version}").mkdir(parents=True, exist_ok=True)
         temp_dir = engine / "TEMP"
         temp_dir.mkdir(parents=True, exist_ok=True)
-        if not self.list_path.is_file():
-            raise TrainError(f"训练清单不存在：{self.list_path}")
+        # 子进程 cwd=引擎根，清单必须是绝对路径
+        list_path = self.list_path.resolve()
+        if not list_path.is_file():
+            raise TrainError(f"训练清单不存在：{list_path}")
         self.shared.log(
             f"[训练] 版本 {version} ｜ s2底模 {pre['s2G'].name} ｜ s1底模 {pre['s1'].name}"
         )
+        launcher = engine / LAUNCHER_NAME
+        launcher.write_text(LAUNCHER_SRC, encoding="utf-8")
 
         base_env = {
-            "inp_text": str(self.list_path),
+            "inp_text": str(list_path),
             "inp_wav_dir": "",
             "exp_name": self.exp,
             "opt_dir": str(opt_dir),
@@ -170,6 +197,9 @@ class Trainer(threading.Thread):
             "_CUDA_VISIBLE_DEVICES": "0",
             "is_half": "False",
         }
+        # 引擎脚本跨目录导入：text/ 在 GPT_SoVITS/ 里，tools/ 在引擎根
+        # （prepare 脚本 from text.cleaner / from tools.my_utils；训练脚本 import utils/module）
+        path_env = {"PYTHONPATH": str(engine) + os.pathsep + str(engine / "GPT_SoVITS")}
 
         # (阶段名, 引擎相对脚本, 环境变量, 阶段后合并函数)
         def merge(pattern: str, target: str):
@@ -184,20 +214,22 @@ class Trainer(threading.Thread):
         need_sv = version in SV_VERSIONS
         stages: list[tuple[str, str, dict, object]] = [
             ("1-text", "GPT_SoVITS/prepare_datasets/1-get-text.py",
-             {**base_env, "bert_pretrained_dir": str(pre["bert"])},
+             {**base_env, **path_env, "bert_pretrained_dir": str(pre["bert"])},
              merge("2-name2text-{}.txt", "2-name2text.txt")),
             ("2-hubert-wav32k", "GPT_SoVITS/prepare_datasets/2-get-hubert-wav32k.py",
-             {**base_env, "cnhubert_base_dir": str(pre["hubert"]), "sv_path": str(pre["sv"])},
+             {**base_env, **path_env, "cnhubert_base_dir": str(pre["hubert"]),
+              "sv_path": str(pre["sv"])},
              None),
         ]
         if need_sv:
             stages.append(
                 ("2-sv", "GPT_SoVITS/prepare_datasets/2-get-sv.py",
-                 {**base_env, "cnhubert_base_dir": str(pre["hubert"]), "sv_path": str(pre["sv"])},
+                 {**base_env, **path_env, "cnhubert_base_dir": str(pre["hubert"]),
+                  "sv_path": str(pre["sv"])},
                  None))
         stages.append(
             ("3-semantic", "GPT_SoVITS/prepare_datasets/3-get-semantic.py",
-             {**base_env, "pretrained_s2G": str(pre["s2G"]),
+             {**base_env, **path_env, "pretrained_s2G": str(pre["s2G"]),
               "s2config_path": str(pre["s2config"])},
              merge("6-name2semantic-{}.tsv", "6-name2semantic.tsv")))
         stages.append(("4-sovits", S2_SCRIPT_BY_VERSION[version], None, None))
@@ -217,7 +249,7 @@ class Trainer(threading.Thread):
 
             if env is not None:  # prepare 阶段：环境变量契约
                 self.proc = subprocess.Popen(
-                    [str(py), "-s", script], cwd=str(engine),
+                    [str(py), launcher, script], cwd=str(engine),
                     env={**os.environ, **env},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     creationflags=WIN_SILENT,
@@ -225,15 +257,16 @@ class Trainer(threading.Thread):
             elif stage == "4-sovits":  # s2_train：JSON 配置契约
                 cfg_path = self._build_s2_config(engine, temp_dir, pre, opt_dir)
                 self.proc = subprocess.Popen(
-                    [str(py), "-s", script, "--config", str(cfg_path)],
-                    cwd=str(engine), stdout=subprocess.PIPE,
+                    [str(py), launcher, script, "--config", str(cfg_path)],
+                    cwd=str(engine), env={**os.environ, **path_env},
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, creationflags=WIN_SILENT,
                 )
             else:  # s1_train：YAML 配置契约
                 cfg_path = self._build_s1_config(engine, temp_dir, pre, opt_dir)
                 self.proc = subprocess.Popen(
-                    [str(py), "-s", script, "--config_file", str(cfg_path)],
-                    cwd=str(engine), env={**os.environ, "hz": "25hz",
+                    [str(py), launcher, script, "--config_file", str(cfg_path)],
+                    cwd=str(engine), env={**os.environ, **path_env, "hz": "25hz",
                                           "_CUDA_VISIBLE_DEVICES": "0"},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     creationflags=WIN_SILENT,

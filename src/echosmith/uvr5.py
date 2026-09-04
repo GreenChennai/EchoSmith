@@ -71,6 +71,8 @@ def separate(cfg: Config, shared: Shared, wav_path: Path) -> Path:
     py = valid_engine(engine)
     if py is None:
         raise Uvr5Error("引擎未就绪：请先在「引擎」页完成整合包下载/导入")
+    # 子进程 cwd=引擎根，输入/输出路径必须绝对
+    wav_path = wav_path.resolve()
     driver = engine / DRIVER_NAME
     driver.write_text(DRIVER_SRC, encoding="utf-8")
     vocal_dir = wav_path.parent / "uvr5_vocal"

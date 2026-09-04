@@ -150,23 +150,52 @@ class DownloadTask(threading.Thread):
         part.replace(target)
 
     # -- 解压 -------------------------------------------------------------------
+    @staticmethod
+    def _find_7z() -> str | None:
+        import shutil as _sh  # noqa: PLC0415
+        for cand in (
+            _sh.which("7z"),
+            r"C:\Program Files\7-Zip\7z.exe",
+            r"C:\Program Files (x86)\7-Zip\7z.exe",
+        ):
+            if cand and Path(cand).is_file():
+                return cand
+        return None
+
     def _extract(self, archive: Path, dest_dir: Path) -> None:
         self.shared.set_pl("解压", "进行中")
-        self.shared.set_dl("解压中（7z 解压大包需要几分钟）")
-        try:
-            import py7zr  # noqa: PLC0415
-        except ImportError as e:
-            raise DownloaderError("缺少 py7zr，无法解压 .7z 整合包") from e
+        self.shared.set_dl("解压中（大包需要几分钟）")
         extract_to = dest_dir / "_extract_tmp"
         shutil.rmtree(extract_to, ignore_errors=True)
         extract_to.mkdir(parents=True)
-        try:
-            with py7zr.SevenZipFile(archive, mode="r") as z:
-                names = z.getnames()
-                root_guess = names[0].split("/")[0] if "/" in names[0] else ""
-                z.extractall(path=extract_to)
-        except py7zr.Bad7zFile as e:
-            raise DownloaderError("7z 包损坏（下载不完整？删除 .part 重新下载）") from e
+        # 官方整合包是 BCJ2 压缩，py7zr 不支持——优先用系统 7-Zip
+        seven_zip = self._find_7z()
+        if seven_zip:
+            import subprocess  # noqa: PLC0415
+            import sys as _sys  # noqa: PLC0415
+            silent = 0x08000000 if _sys.platform == "win32" else 0
+            r = subprocess.run(
+                [seven_zip, "x", "-y", f"-o{extract_to}", str(archive)],
+                capture_output=True, creationflags=silent, timeout=7200,
+            )
+            if r.returncode != 0:
+                raise DownloaderError(
+                    f"7-Zip 解压失败（exit {r.returncode}），日志尾部："
+                    + r.stderr.decode("utf-8", "replace")[-300:]
+                )
+        else:
+            try:
+                import py7zr  # noqa: PLC0415
+            except ImportError as e:
+                raise DownloaderError(
+                    "未找到 7-Zip 且缺少 py7zr，无法解压。"
+                    "官方整合包为 BCJ2 压缩，py7zr 也不支持——请安装 7-Zip 后重试。"
+                ) from e
+            try:
+                with py7zr.SevenZipFile(archive, mode="r") as z:
+                    z.extractall(path=extract_to)
+            except py7zr.Bad7zFile as e:
+                raise DownloaderError("7z 包损坏（下载不完整？删除 .part 重新下载）") from e
         # 定位包含 api_v2.py 的目录（可能是包内顶层目录或解压根）
         src_root = extract_to
         if not (src_root / "api_v2.py").is_file():

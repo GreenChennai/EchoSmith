@@ -21,19 +21,34 @@ class RefRow:
     aux_refs: list[str] = field(default_factory=list)
 
 
+_SOVITS_ROOTS = ("SoVITS_weights_v2ProPlus", "SoVITS_weights_v2Pro", "SoVITS_weights_v4",
+                 "SoVITS_weights_v3", "SoVITS_weights_v2", "SoVITS_weights")
+_GPT_ROOTS = ("GPT_weights_v2ProPlus", "GPT_weights_v2Pro", "GPT_weights_v4",
+              "GPT_weights_v3", "GPT_weights_v2", "GPT_weights")
+
+
 def scan_weights(engine: Path, exp: str) -> dict[str, list[Path]]:
-    """扫描 logs/<exp> 下的训练产物（覆盖全部版本权重目录）。"""
+    """扫描训练产物：logs/<exp>/ 下的训练目录 + 引擎根版本目录（if_save_every_weights 拷贝，
+    文件名以实验名开头）。"""
     out: dict[str, list[Path]] = {"sovits": [], "gpt": []}
-    for sub in ("SoVITS_weights_v2ProPlus", "SoVITS_weights_v2Pro", "SoVITS_weights_v4",
-                "SoVITS_weights_v3", "SoVITS_weights_v2", "SoVITS_weights"):
+    for sub in _SOVITS_ROOTS:
         d = engine / "logs" / exp / sub
         if d.is_dir():
             out["sovits"].extend(sorted(d.glob("*.pth"), key=lambda p: p.stat().st_mtime))
-    for sub in ("GPT_weights_v2ProPlus", "GPT_weights_v2Pro", "GPT_weights_v4",
-                "GPT_weights_v3", "GPT_weights_v2", "GPT_weights"):
+        d2 = engine / sub
+        if d2.is_dir():
+            out["sovits"].extend(sorted(
+                (p for p in d2.glob("*.pth") if p.name.startswith(exp)),
+                key=lambda p: p.stat().st_mtime))
+    for sub in _GPT_ROOTS:
         d = engine / "logs" / exp / sub
         if d.is_dir():
             out["gpt"].extend(sorted(d.glob("*.ckpt"), key=lambda p: p.stat().st_mtime))
+        d2 = engine / sub
+        if d2.is_dir():
+            out["gpt"].extend(sorted(
+                (p for p in d2.glob("*.ckpt") if p.name.startswith(exp)),
+                key=lambda p: p.stat().st_mtime))
     return out
 
 
