@@ -1,0 +1,26 @@
+# 构建产物
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行时数据（交付/提交前清理）
+config/echosmith.json
+config/*.json.bad
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+models/datasets/*
+!models/datasets/.gitkeep
+models/GPT-SoVITS/
+models/*.7z
+models/*.part
+
+# 本机
+.idea/
+.vscode/

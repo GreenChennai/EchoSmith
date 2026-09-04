@@ -1,0 +1,45 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: pyinstaller build.spec
+
+      - name: Smoke check artifact
+        run: |
+          if (!(Test-Path dist/EchoSmith.exe)) { throw "EchoSmith.exe not found" }
+          (Get-Item dist/EchoSmith.exe).Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoSmith-windows
+          path: dist/EchoSmith.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/EchoSmith.exe
+          generate_release_notes: true

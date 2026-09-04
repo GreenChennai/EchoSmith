@@ -1,0 +1,25 @@
+{
+    "packages": [
+        {
+            "id": "v2pro-20250604",
+            "label": "v2pro（2025-06-04，推荐，最新架构）",
+            "url": "https://huggingface.co/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v2pro-20250604.7z?download=true",
+            "mirror_url": "https://hf-mirror.com/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v2pro-20250604.7z?download=true",
+            "format": "7z"
+        },
+        {
+            "id": "v4-20250529fix",
+            "label": "v4（2025-05-29fix，稳定版）",
+            "url": "https://huggingface.co/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v4-20250529fix.7z?download=true",
+            "mirror_url": "https://hf-mirror.com/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v4-20250529fix.7z?download=true",
+            "format": "7z"
+        },
+        {
+            "id": "v2-240821",
+            "label": "v2（2024-08-21，最小体积）",
+            "url": "https://huggingface.co/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v2-240821.7z?download=true",
+            "mirror_url": "https://hf-mirror.com/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v2-240821.7z?download=true",
+            "format": "7z"
+        }
+    ]
+}
