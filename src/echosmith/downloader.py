@@ -88,6 +88,7 @@ class DownloadTask(threading.Thread):
         if self.cancelled.is_set():
             return
         self._validate(dest_dir)
+        self._patch_compat(dest_dir)
 
     # -- 下载（断点续传 + 镜像回退） ---------------------------------------------
     def _download(self, target: Path) -> None:
@@ -222,6 +223,27 @@ class DownloadTask(threading.Thread):
         self.cfg.save()
         self.shared.set_dl("引擎就绪 ✔")
         self.shared.log(f"[下载] 引擎校验通过，已写入配置：{final}")
+
+    # -- 兼容补丁 ---------------------------------------------------------------
+    def _patch_compat(self, dest_dir: Path) -> None:
+        """解压后应用 ZLUDA 兼容补丁。
+
+        补丁由 ZLUDA_MODE 环境变量守卫，不启用 GPU 加速时零副作用；
+        幂等，重复调用不会重复插入。失败只记日志，不影响下载流程。
+        """
+        from .zluda_patch import apply as apply_zluda  # noqa: PLC0415
+
+        final = dest_dir / "GPT-SoVITS"
+        try:
+            done = apply_zluda(final)
+        except (ValueError, OSError) as e:
+            self.shared.log(f"[下载] ZLUDA 兼容补丁跳过：{e}")
+            return
+        if done:
+            self.shared.log(
+                f"[下载] 已应用 {len(done)} 个 ZLUDA 兼容补丁（不启用 GPU 时无副作用）")
+            for d in done:
+                self.shared.log(f"  · {d}")
 
 
 # -- 小工具 -----------------------------------------------------------------------

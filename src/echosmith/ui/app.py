@@ -358,9 +358,28 @@ class App:
             return
         if valid_engine(eng):
             dpg.set_value(T_ENG_VALID, f"引擎就绪 ✔  {eng}")
+            self._ensure_zluda_patch(eng)
         else:
             dpg.set_value(T_ENG_VALID,
                           f"已配置目录但校验失败（缺 api_v2.py 或 runtime/python.exe）：{eng}")
+
+    def _ensure_zluda_patch(self, eng: Path) -> None:
+        """启动时补齐 ZLUDA 兼容补丁（幂等，缺了才打）。
+
+        老版本装的引擎没有这些补丁，升级后自动补上，这样 EchoRunner 开 GPU
+        加速时不会踩 ORT CUDA EP 崩溃 / 卷积缺 MIOpen 的坑。
+        """
+        from ..zluda_patch import apply as apply_zluda  # noqa: PLC0415
+
+        try:
+            done = apply_zluda(eng)
+        except (ValueError, OSError) as e:
+            self.shared.log(f"[引擎] ZLUDA 兼容补丁检查失败（不影响 CPU 流程）：{e}")
+            return
+        if done:
+            self.shared.log(f"[引擎] 自动补齐 {len(done)} 个 ZLUDA 兼容补丁")
+            for d in done:
+                self.shared.log(f"  · {d}")
 
     # ------------------------------------------------------------ packages
     def _load_packages(self) -> None:
