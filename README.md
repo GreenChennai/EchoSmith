@@ -11,10 +11,21 @@
 - **训练编排（M3）**：`prepare_datasets×3 → s2_train(SoVITS) → s1_train(GPT)` 五阶段子进程链，预训练权重按引擎版本自动探测（v2Pro/v2/v1），日志实时滚屏、遇错即停、可随时停止
 - **声线卡一键生成（M3）**：扫描训练产物 → 绑定多套带情感标签的参考音频 → 产出 EchoRunner 兼容 `card.json`，与 [EchoRunner](https://github.com/GreenChennai/EchoRunner) 无缝衔接
 - **打标**：优先接本地 FunASR 服务（MomentShift 服务模式 `http://127.0.0.1:8000/v1`，OpenAI 兼容）
+- **设备后端兼容（v0.2.7）**：NVIDIA CUDA 原生 / **AMD 经 ZLUDA**（torch 仍走 CUDA 契约，引擎脚本零改动）/ CPU 自动兜底；设置页一键探测设备后端
 - **遇错即停**：任一步失败立即停止并给出原因，不自动重试
 - **干净落盘**：`models/datasets/<名称>/`（clips/ + <名称>.list）、声线卡落 `models/voices/<名>/card.json`，中间文件自动清理
 
 > ⚠️ 训练编排与 UVR5 走的是整合包内部接口（webui 环境变量契约 / uvr5 lib）。**v0.2.1 起已逐行对照 GPT-SoVITS 官方源码核验**（prepare_datasets 环境变量契约含 i_part/all_parts 分片与合并、s2_train 的 JSON 配置契约、s1_train 的 YAML 配置契约、uvr5 `vr.py` 的 `_path_audio_(inp, ins_root, vocal_root, format, is_hp3)` 签名与 `vocal_<name>_<agg>.wav` 产物命名、v2Pro 的 sv 模型阶段）；引擎版本再演进时错误信息会原样透出便于适配。
+
+## AMD 显卡 GPU 加速（ZLUDA）
+
+N 卡开箱即用（整合包 torch 为 CUDA 构建）；AMD 卡经 [ZLUDA](https://github.com/lshqqytiger/ZLUDA) 转译跑同一条 CUDA 契约，**引擎脚本无需任何手动修改**——EchoSmith 会在引擎下载/导入后与每次训练前自动应用兼容补丁（幂等，`ZLUDA_MODE` 环境变量守卫，不开 GPU 时零副作用）：
+
+- g2pw 文本前端强制走 CPU（ONNX Runtime 的 CUDA EP 在 ZLUDA 下必崩）
+- 全部含卷积的引擎脚本（2-hubert / 2-sv / 3-semantic / s2 / s1 / TTS / UVR5）按 **MIOpen 可用性守卫 cuDNN**：官方 HIP SDK 不带 MIOpen.dll → 自动禁用 cuDNN 走 torch 原生卷积；换用 [TheRock nightly](https://therock-nightly-tarball.s3.amazonaws.com/index.html)（`therock-dist-windows-gfx120X-all-*.tar.gz`，RDNA4 对应 gfx120X）等带 MIOpen 的 ML 构建则自动恢复 cuDNN 加速
+- `2-sv` 阶段官方脚本逐行 try/except 吞错，特征缺失会**静默产出废数据**——训练器在阶段后清点产物数量，缺了直接报错拦下
+
+设置步骤：「设置」页 → 勾选「启用 ZLUDA GPU 加速」→ 填 ZLUDA 目录（含 `nvcuda.dll`）与 HIP SDK 目录（含 `bin\amdhip64_7.dll`）→ 保存 → 「探测设备后端」应显示 `✔ zluda：AMD Radeon ...[ZLUDA]`。
 
 ## 路线图
 
@@ -60,7 +71,8 @@ models/datasets/<名称>/
 
 ```bash
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements.txt pytest
+.venv\Scripts\python -m pytest tests/ -q
 .venv\Scripts\python main.py
 ```
 

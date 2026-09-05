@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 
 from .config import Config
+from .device import zluda_env
 from .downloader import valid_engine
 from .state import Shared
 
@@ -170,6 +171,21 @@ class Trainer(threading.Thread):
             raise TrainError("引擎未就绪，请先完成整合包下载/导入")
         pre = detect_version_and_pretrains(engine)
         version = pre["version"]
+        # ZLUDA 环境注入 + 兼容补丁兜底（补丁由 ZLUDA_MODE 守卫，幂等，CPU 下零副作用）
+        zenv = zluda_env(self.cfg)
+        if zenv:
+            self.shared.log("[训练] ZLUDA GPU 加速已启用（AMD 经 CUDA 转译）")
+            from .zluda_patch import deploy_runtime_shims  # noqa: PLC0415
+        from .zluda_patch import apply as apply_zluda  # noqa: PLC0415
+        try:
+            done = apply_zluda(engine)
+            if zenv:
+                zluda_dir = Path(str(self.cfg["zluda_dir"]))
+                done += [f"垫片 {n}" for n in deploy_runtime_shims(engine, zluda_dir)]
+        except ValueError as e:
+            raise TrainError(f"ZLUDA 补丁应用失败：{e}") from e
+        if done:
+            self.shared.log(f"[训练] 已补齐 {len(done)} 项 ZLUDA 兼容补丁")
         opt_dir = engine / "logs" / self.exp
         opt_dir.mkdir(parents=True, exist_ok=True)
         # webui 训练前预创建存档目录（my_save 不会自建）
@@ -250,7 +266,7 @@ class Trainer(threading.Thread):
             if env is not None:  # prepare 阶段：环境变量契约
                 self.proc = subprocess.Popen(
                     [str(py), launcher, script], cwd=str(engine),
-                    env={**os.environ, **env},
+                    env={**os.environ, **zenv, **env},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     creationflags=WIN_SILENT,
                 )
@@ -258,7 +274,7 @@ class Trainer(threading.Thread):
                 cfg_path = self._build_s2_config(engine, temp_dir, pre, opt_dir)
                 self.proc = subprocess.Popen(
                     [str(py), launcher, script, "--config", str(cfg_path)],
-                    cwd=str(engine), env={**os.environ, **path_env},
+                    cwd=str(engine), env={**os.environ, **zenv, **path_env},
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, creationflags=WIN_SILENT,
                 )
@@ -266,7 +282,8 @@ class Trainer(threading.Thread):
                 cfg_path = self._build_s1_config(engine, temp_dir, pre, opt_dir)
                 self.proc = subprocess.Popen(
                     [str(py), launcher, script, "--config_file", str(cfg_path)],
-                    cwd=str(engine), env={**os.environ, **path_env, "hz": "25hz",
+                    cwd=str(engine), env={**os.environ, **zenv, **path_env,
+                                          "hz": "25hz",
                                           "_CUDA_VISIBLE_DEVICES": "0"},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     creationflags=WIN_SILENT,
@@ -283,6 +300,8 @@ class Trainer(threading.Thread):
                 return
             if rc != 0:
                 raise TrainError(f"阶段 {stage} 退出码 {rc}（详见上方日志）")
+            if stage == "2-sv":  # 引擎脚本逐行吞错，必须数产物防静默废数据
+                self._verify_sv(opt_dir, list_path)
             if after is not None:
                 after()
             self.shared.set_tr(stage, "完成", i, total)
@@ -352,6 +371,19 @@ class Trainer(threading.Thread):
         out.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False),
                        encoding="utf-8")
         return out
+
+    @staticmethod
+    def _verify_sv(opt_dir: Path, list_path: Path) -> None:
+        """2-sv 产物守卫：引擎脚本逐行 try/except 吞掉所有错误，GPU 卷积失败
+        也会"正常"退出，若不数产物就会带着废数据进入后续训练。"""
+        expect = sum(1 for l in list_path.read_text("utf-8").splitlines() if l.strip())
+        got = len(list((opt_dir / "7-sv_cn").glob("*.pt")))
+        if got < expect:
+            raise TrainError(
+                f"2-sv 语音特征缺失：仅 {got}/{expect} 条成功（脚本逐行吞错，"
+                f"多为卷积失败）。ZLUDA 模式请确认 HIP SDK/补丁（设置页可探测）；"
+                f"清空 {opt_dir / '7-sv_cn'} 后重试"
+            )
 
     @staticmethod
     def _newest(d: Path, pat: str) -> Path | None:

@@ -36,6 +36,10 @@ DEFAULTS = {
     "save_every_epoch": 4,
     # 声线卡输出目录（EchoRunner 兼容格式）
     "voices_dir": "models/voices",
+    # 设备后端：NVIDIA 原生 CUDA / AMD 经 ZLUDA（torch 仍走 CUDA 契约）/ CPU 自动兜底
+    "zluda_mode": False,             # AMD 显卡 ZLUDA 加速开关
+    "zluda_dir": "",                 # ZLUDA 运行时目录（含 nvcuda.dll，如 E:\zluda\zluda）
+    "hip_path": "",                  # HIP SDK 目录（含 bin/amdhip64_7.dll，如 E:\zluda\hip72）
 }
 
 

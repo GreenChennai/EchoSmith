@@ -27,6 +27,7 @@ T_DS_COMBO, T_EXP, T_S2EP, T_S1EP, T_BS = "ds_combo", "exp", "s2ep", "s1ep", "bs
 T_TR_STAGE, T_TR_BAR, T_TR_STATUS, T_BTN_TRAIN = "tr_stage", "tr_bar", "tr_status", "btn_train"
 T_CARD_EXP, T_CARD_NAME, T_CARD_DEF, T_CARD_ROWS, T_CARD_STATUS = (
     "card_exp", "card_name", "card_def", "card_rows", "card_status")
+T_ZLUDA, T_ZLUDA_DIR, T_HIP, T_ZPROBE = "zluda", "zluda_dir", "hip_path", "zluda_probe"
 
 
 class App:
@@ -130,7 +131,8 @@ class App:
         dpg.add_text("注：切分/打标参数在「设置」页调整。", color=(170, 150, 90))
 
     def _build_train_tab(self) -> None:
-        dpg.add_text("数据集 → prepare_datasets×3 → SoVITS(s2) → GPT(s1)，CPU 单卡模式",
+        dpg.add_text("数据集 → prepare_datasets×3 → SoVITS(s2) → GPT(s1)；"
+                     "设备自动：NVIDIA CUDA / AMD（ZLUDA，设置页开启）/ CPU",
                      color=(160, 160, 160))
         with dpg.group(horizontal=True):
             dpg.add_text("训练清单")
@@ -301,6 +303,24 @@ class App:
             dpg.add_text("静音最短时长 s")
             dpg.add_input_float(tag=T_SDUR, width=110, format="%.1f")
         dpg.add_spacer(height=6)
+        dpg.add_separator()
+        dpg.add_text("GPU 加速（N 卡无需开启；AMD 开 ZLUDA；都没有保持关闭走 CPU）",
+                     color=(160, 160, 160))
+        dpg.add_checkbox(tag=T_ZLUDA,
+                         label="启用 ZLUDA GPU 加速（本工具的训练/分离；合成的开关在 EchoRunner）")
+        with dpg.group(horizontal=True):
+            dpg.add_text("ZLUDA 目录")
+            dpg.add_input_text(tag=T_ZLUDA_DIR, width=470,
+                               hint="含 nvcuda.dll 的目录，如 E:\\zluda\\zluda")
+        with dpg.group(horizontal=True):
+            dpg.add_text("HIP SDK 目录")
+            dpg.add_input_text(tag=T_HIP, width=470,
+                               hint="含 bin\\amdhip64_7.dll；ML 版（含 MIOpen.dll）卷积更快")
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="探测设备后端", callback=lambda: threading.Thread(
+                target=self._probe_device, daemon=True).start())
+            dpg.add_text("", tag=T_ZPROBE, color=(160, 160, 160))
+        dpg.add_spacer(height=6)
         dpg.add_button(label="保存设置", callback=self._save_settings)
 
     # ------------------------------------------------------------ polling
@@ -309,6 +329,16 @@ class App:
             self._refresh_dynamic()
             dpg.set_frame_callback(dpg.get_frame_count() + 12, _poll)
         dpg.set_frame_callback(8, _poll)
+
+    _probe_result: dict | None = None
+
+    def _probe_device(self) -> None:
+        """后台探测设备后端（线程内不得碰 dpg，结果经 _probe_result 中转）。"""
+        from ..device import probe  # noqa: PLC0415
+        try:
+            self._probe_result = probe(self.cfg.engine_path, self.cfg)
+        except (OSError, ValueError) as e:
+            self._probe_result = {"ok": False, "backend": "unknown", "detail": str(e)}
 
     def _refresh_dynamic(self) -> None:
         s = self.shared.snapshot()
@@ -339,6 +369,12 @@ class App:
         dpg.set_value(T_TR_BAR, tpct)
         dpg.configure_item(T_TR_BAR, overlay=f"{tr_idx}/{tr_tot}" if tr_tot else "—")
         dpg.set_value(T_TR_STATUS, tr_status)
+        # 设备探测结果（后台线程 → 主线程中转）
+        if self._probe_result is not None:
+            r, self._probe_result = self._probe_result, None
+            mark = "✔" if r.get("ok") else "✘"
+            torch = f"｜torch {r['torch']}" if r.get("torch") else ""
+            dpg.set_value(T_ZPROBE, f"{mark} {r.get('backend', '?')}：{r.get('detail', '')}{torch}")
         # 日志
         lines = s["app_log"]
         children = dpg.get_item_children(T_LOG, 1)
@@ -503,6 +539,9 @@ class App:
         dpg.set_value(T_S2EP, int(self.cfg["s2_total_epoch"]))
         dpg.set_value(T_S1EP, int(self.cfg["s1_total_epoch"]))
         dpg.set_value(T_BS, int(self.cfg["batch_size"]))
+        dpg.set_value(T_ZLUDA, bool(self.cfg["zluda_mode"]))
+        dpg.set_value(T_ZLUDA_DIR, str(self.cfg["zluda_dir"] or ""))
+        dpg.set_value(T_HIP, str(self.cfg["hip_path"] or ""))
 
     def _save_settings(self) -> None:
         self.cfg["ffmpeg_path"] = dpg.get_value(T_FFMPEG).strip()
@@ -514,11 +553,30 @@ class App:
         self.cfg["max_clip_ms"] = max(1000, int(dpg.get_value(T_MAXCLIP)))
         self.cfg["silence_db"] = int(dpg.get_value(T_SDB))
         self.cfg["silence_min_dur"] = max(0.1, float(dpg.get_value(T_SDUR)))
+        self.cfg["zluda_mode"] = bool(dpg.get_value(T_ZLUDA))
+        self.cfg["zluda_dir"] = dpg.get_value(T_ZLUDA_DIR).strip()
+        self.cfg["hip_path"] = dpg.get_value(T_HIP).strip()
         try:
             self.cfg.save()
             self.shared.log("[设置] 已保存 config/echosmith.json")
         except OSError as e:
             self.shared.set_error(f"保存失败：{e}")
+            return
+        if self.cfg["zluda_mode"]:  # 保存即校验，给出能落地的错误提示
+            from ..device import DeviceError, zluda_env  # noqa: PLC0415
+            try:
+                zluda_env(self.cfg)
+                self.shared.log("[设置] ZLUDA 环境校验通过")
+            except DeviceError as e:
+                self.shared.set_error(str(e))
+        elif self.cfg.engine_path.is_dir():  # 关闭加速 → 还原 NVIDIA 原版 DLL
+            from ..zluda_patch import restore_runtime_shims  # noqa: PLC0415
+            try:
+                done = restore_runtime_shims(self.cfg.engine_path)
+                if done:
+                    self.shared.log(f"[设置] 已还原 NVIDIA 原版 DLL：{'、'.join(done)}")
+            except (ValueError, OSError) as e:
+                self.shared.set_error(f"还原 DLL 失败：{e}")
 
 
 def run() -> None:
