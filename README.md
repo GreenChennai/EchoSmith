@@ -27,6 +27,8 @@ N 卡开箱即用（整合包 torch 为 CUDA 构建）；AMD 卡经 [ZLUDA](http
 
 设置步骤：「设置」页 → 勾选「启用 ZLUDA GPU 加速」→ 填 ZLUDA 目录（含 `nvcuda.dll`）与 HIP SDK 目录（含 `bin\amdhip64_7.dll`）→ 保存 → 「探测设备后端」应显示 `✔ zluda：AMD Radeon ...[ZLUDA]`。
 
+**本机实测边界（RX 9070 GRE / ZLUDA rel.854c58，诚实数据）**：GPU 对 prepare 特征提取与 TTS 推理收益明确；但 **s2/s1 训练仍建议走 CPU**——GPT-SoVITS 训练是小算子密集型负载，ZLUDA 的逐内核派发开销会吃满一核（GPU 利用率仅 ~20%），实测同数据集 CPU 训练 s2+s1 共 9 分钟、GPU 跑 10 小时未完成一个 epoch。cuDNN/MIOpen 加速路径（TheRock nightly）已验证 MIOpen 本体可用，但 torch cuDNN→垫片→MIOpen 转发链在当前 ZLUDA 构建上不可用（v8 API NOT_SUPPORTED，v7 陷入马拉松 JIT）。CPU 路径全部守卫零副作用，配置里关掉 `zluda_mode` 即回到该路径。
+
 ## 路线图
 
 | 里程碑 | 内容 | 状态 |
