@@ -1,6 +1,7 @@
 """素材流水线编排：提音轨 → 静音切分 → 切片 → 打标 → 训练清单。单线程，遇错即停。"""
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 
@@ -39,6 +40,10 @@ class Pipeline(threading.Thread):
             self.shared.log(f"[流水线] 失败：{e}")
             self.shared.set_pl("失败", "遇错停止")
             self.shared.set_error(str(e))
+        except Exception as e:  # 兜底：subprocess 超时等意外异常不得静默杀死线程
+            self.shared.log(f"[流水线] 未预期异常：{type(e).__name__}: {e}")
+            self.shared.set_pl("失败", "遇错停止")
+            self.shared.set_error(f"{type(e).__name__}: {e}")
 
     def _run(self) -> None:
         cfg, shared = self.cfg, self.shared
@@ -47,6 +52,14 @@ class Pipeline(threading.Thread):
         name = self.dataset_name.strip()
         if not name:
             raise PipelineError("数据集名称为空")
+        if re.search(r'[\\/:*?"<>|]', name) or name in (".", ".."):
+            raise PipelineError(f"数据集名称含非法字符（不能用作目录名）：{name}")
+
+        min_ms, max_ms = int(cfg["min_clip_ms"]), int(cfg["max_clip_ms"])
+        if min_ms >= max_ms:
+            raise PipelineError(
+                f"切分参数倒置：最短片段 {min_ms}ms ≥ 最长片段 {max_ms}ms（设置页可改）"
+            )
 
         ds_root = cfg.dataset_path / name
         clips_dir = ds_root / "clips"

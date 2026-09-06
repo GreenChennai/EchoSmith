@@ -569,7 +569,8 @@ class App:
         self.cfg["speaker"] = dpg.get_value(T_SPEAKER).strip() or "speaker0"
         self.cfg["language"] = dpg.get_value(T_LANG).strip() or "ZH"
         self.cfg["min_clip_ms"] = max(100, int(dpg.get_value(T_MINCLIP)))
-        self.cfg["max_clip_ms"] = max(1000, int(dpg.get_value(T_MAXCLIP)))
+        self.cfg["max_clip_ms"] = max(self.cfg["min_clip_ms"] + 100,
+                                      int(dpg.get_value(T_MAXCLIP)))
         self.cfg["silence_db"] = int(dpg.get_value(T_SDB))
         self.cfg["silence_min_dur"] = max(0.1, float(dpg.get_value(T_SDUR)))
         self.cfg["zluda_mode"] = bool(dpg.get_value(T_ZLUDA))

@@ -77,6 +77,10 @@ class DownloadTask(threading.Thread):
             self.shared.log(f"[下载] 失败：{e}")
             self.shared.set_dl("失败")
             self.shared.set_error(str(e))
+        except Exception as e:  # 兜底：7z 超时/解压库异常等不得静默杀死线程
+            self.shared.log(f"[下载] 未预期异常：{type(e).__name__}: {e}")
+            self.shared.set_dl("失败")
+            self.shared.set_error(f"{type(e).__name__}: {e}")
 
     def _run(self) -> None:
         dest_dir = _models_dir(self.cfg)

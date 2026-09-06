@@ -163,6 +163,10 @@ class Trainer(threading.Thread):
             self.shared.log(f"[训练] 失败：{e}")
             self.shared.set_tr("失败", "遇错停止")
             self.shared.set_error(str(e))
+        except Exception as e:  # 窄异常集兜底：否则线程静默死亡，界面永久卡在阶段上
+            self.shared.log(f"[训练] 未预期异常：{type(e).__name__}: {e}")
+            self.shared.set_tr("失败", "遇错停止")
+            self.shared.set_error(f"{type(e).__name__}: {e}")
 
     def _run(self) -> None:
         engine = self.cfg.engine_path
