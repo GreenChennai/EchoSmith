@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="300" viewBox="0 0 1200 300"
+     role="img" aria-labelledby="t d">
+  <title id="t">EchoSmith 全流程</title>
+  <desc id="d">从素材到批量合成的完整链路：视频/音频经提音轨、人声分离、静音切分、自动打标生成训练清单，六阶段训练产出 SoVITS 与 GPT 权重，打包为声线卡交给 EchoRunner 批量合成。</desc>
+
+  <rect width="1200" height="300" rx="24" fill="#0E1424"/>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,PingFang SC,sans-serif">
+    <!-- ===== 上行：素材 → 训练清单 ===== -->
+    <g transform="translate(56 44)">
+      <rect width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="20" y="32" font-size="21" font-weight="600" fill="#F1F5F9">① 素材流水线</text>
+      <text x="20" y="60" font-size="18" fill="#94A3B8">视频/音频 → 32k 音轨</text>
+
+      <rect x="286" width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="306" y="32" font-size="21" font-weight="600" fill="#F1F5F9">② 静音切分</text>
+      <text x="306" y="60" font-size="18" fill="#94A3B8">&lt;10s 切片，阈值可调</text>
+
+      <rect x="572" width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="592" y="32" font-size="21" font-weight="600" fill="#F1F5F9">③ 自动打标</text>
+      <text x="592" y="60" font-size="18" fill="#94A3B8">FunASR / 引擎内置回退</text>
+
+      <rect x="858" width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="878" y="32" font-size="21" font-weight="600" fill="#F1F5F9">④ 训练清单</text>
+      <text x="878" y="60" font-size="18" fill="#94A3B8" font-family="ui-monospace,Consolas,monospace">clips/ + 数据集.list</text>
+
+      <path d="M250 42 H 286" stroke="#22C55E" stroke-width="2" marker-end="url(#arr)"/>
+      <path d="M536 42 H 572" stroke="#22C55E" stroke-width="2" marker-end="url(#arr)"/>
+      <path d="M822 42 H 858" stroke="#22C55E" stroke-width="2" marker-end="url(#arr)"/>
+    </g>
+
+    <!-- 转折连接线 -->
+    <path d="M1164 128 V 172" stroke="#22C55E" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+    <!-- ===== 下行：训练 → 声线卡 → 合成 ===== -->
+    <g transform="translate(56 176)">
+      <rect x="858" width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="878" y="32" font-size="21" font-weight="600" fill="#F1F5F9">⑤ 六阶段训练</text>
+      <text x="878" y="60" font-size="18" fill="#94A3B8">text/hubert/sv/semantic/s2/s1</text>
+
+      <rect x="572" width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="592" y="32" font-size="21" font-weight="600" fill="#F1F5F9">⑥ 声线卡</text>
+      <text x="592" y="60" font-size="18" fill="#94A3B8">权重 + 情感参考音频</text>
+
+      <rect x="286" width="250" height="84" rx="12" fill="#12251A" stroke="#1E4D32"/>
+      <text x="306" y="32" font-size="21" font-weight="600" fill="#22C55E">⑦ 批量合成</text>
+      <text x="306" y="60" font-size="18" fill="#8FBCA3">EchoRunner 无缝衔接</text>
+
+      <rect width="250" height="84" rx="12" fill="#131C30" stroke="#243250"/>
+      <text x="20" y="32" font-size="21" font-weight="600" fill="#F1F5F9">产出</text>
+      <text x="20" y="60" font-size="18" fill="#94A3B8" font-family="ui-monospace,Consolas,monospace">*.wav / *.mp3</text>
+
+      <path d="M858 42 H 822" stroke="#22C55E" stroke-width="2" marker-end="url(#arr)"/>
+      <path d="M572 42 H 536" stroke="#22C55E" stroke-width="2" marker-end="url(#arr)"/>
+      <path d="M286 42 H 250" stroke="#22C55E" stroke-width="2" marker-end="url(#arr)"/>
+    </g>
+  </g>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#22C55E"/>
+    </marker>
+  </defs>
+</svg>
