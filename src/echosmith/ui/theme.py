@@ -204,6 +204,7 @@ def polish_viewport(title: str) -> None:
     if sys.platform != "win32":
         return
     import ctypes
+    import ctypes.wintypes  # 冻结环境不会随 ctypes 自动导入,必须显式
     import os
 
     u32 = ctypes.WinDLL("user32")
