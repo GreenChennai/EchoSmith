@@ -2,99 +2,104 @@
      width="1200" height="320" viewBox="0 0 1200 320"
      role="img" aria-labelledby="t d">
   <title id="t">EchoSmith — 声音克隆工作台</title>
-  <desc id="d">EchoSmith：把一段音频素材变成可批量合成的声线卡。引擎下载、素材切分打标、GPT-SoVITS 六阶段训练全自动编排；左侧为名称与平台徽章，右侧为真实训练流水线的六个阶段。</desc>
+  <desc id="d">EchoSmith:把一段音频素材变成可批量合成的声线卡。引擎下载、素材切分打标、GPT-SoVITS 六阶段训练全自动编排;左侧为名称与平台徽章,右侧为真实训练流水线的六个阶段。</desc>
 
   <defs>
     <linearGradient id="wv" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#22C55E" stop-opacity=".55"/>
+      <stop offset="0" stop-color="#22C55E" stop-opacity=".5"/>
       <stop offset="1" stop-color="#22C55E" stop-opacity=".08"/>
     </linearGradient>
   </defs>
 
   <rect width="1200" height="320" rx="24" fill="#0E1424"/>
 
-  <!-- ============ 左：标题块 ============ -->
-  <g transform="translate(64 52)">
-    <text x="0" y="0" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+  <!-- ============ 左:标题块 ============ -->
+  <g transform="translate(64 54)">
+    <text x="0" y="0" font-family="Consolas,'Courier New','Microsoft YaHei',monospace"
           font-size="19" fill="#22C55E" letter-spacing="4">声匠家族 · GPT-SoVITS · 训练侧</text>
-    <text x="0" y="76" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,PingFang SC,sans-serif"
-          font-size="66" font-weight="700" fill="#F1F5F9">EchoSmith</text>
-    <text x="0" y="122" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,PingFang SC,sans-serif"
+    <text x="0" y="74" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif"
+          font-size="64" font-weight="700" fill="#F1F5F9">EchoSmith</text>
+    <text x="0" y="120" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif"
           font-size="25" fill="#94A3B8">一段素材 → 一张可批量合成的声线卡</text>
-    <text x="0" y="162" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,PingFang SC,sans-serif"
-          font-size="20" fill="#64748B">引擎下载 · 素材切分打标 · GPT-SoVITS 六阶段训练 · 声线卡打包</text>
+    <text x="0" y="158" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif"
+          font-size="20" fill="#7D8CA0">引擎下载 · 素材切分打标 · 六阶段训练 · 声线卡打包</text>
 
-    <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="17">
-      <g transform="translate(0 196)">
-        <rect width="102" height="34" rx="8" fill="#1A2338"/>
-        <text x="51" y="22" text-anchor="middle" fill="#94A3B8">Windows</text>
+    <g font-family="Consolas,'Courier New','Microsoft YaHei',monospace" font-size="17">
+      <g transform="translate(0 192)">
+        <rect width="100" height="34" rx="8" fill="#1A2338"/>
+        <text x="50" y="22" text-anchor="middle" fill="#94A3B8">Windows</text>
       </g>
-      <g transform="translate(114 196)">
-        <rect width="128" height="34" rx="8" fill="#1A2338"/>
-        <text x="64" y="22" text-anchor="middle" fill="#94A3B8">GPT-SoVITS</text>
+      <g transform="translate(112 192)">
+        <rect width="126" height="34" rx="8" fill="#1A2338"/>
+        <text x="63" y="22" text-anchor="middle" fill="#94A3B8">GPT-SoVITS</text>
       </g>
-      <g transform="translate(254 196)">
-        <rect width="216" height="34" rx="8" fill="#12251A"/>
-        <text x="108" y="22" text-anchor="middle" fill="#22C55E">CPU · NVIDIA · AMD/ZLUDA</text>
+      <g transform="translate(250 192)">
+        <rect width="222" height="34" rx="8" fill="#12251A"/>
+        <text x="111" y="22" text-anchor="middle" fill="#22C55E">CPU · NVIDIA · AMD/ZLUDA</text>
       </g>
-      <g transform="translate(482 196)">
-        <rect width="152" height="34" rx="8" fill="#1A2338"/>
-        <text x="76" y="22" text-anchor="middle" fill="#94A3B8">契约单测 · CI</text>
+      <g transform="translate(484 192)">
+        <rect width="150" height="34" rx="8" fill="#1A2338"/>
+        <text x="75" y="22" text-anchor="middle" fill="#94A3B8">契约单测 · CI</text>
       </g>
     </g>
   </g>
 
-  <!-- ============ 右：真实训练流水线（六阶段） ============ -->
-  <g transform="translate(758 46)">
-    <rect width="386" height="228" rx="14" fill="#111A2E" stroke="#243250" stroke-width="1"/>
-    <text x="24" y="36" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
-          font-size="17" fill="#64748B" letter-spacing="2">真实跑通的六个阶段</text>
-    <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="19">
+  <!-- ============ 右:真实训练流水线(六阶段) ============ -->
+  <g transform="translate(730 46)">
+    <rect width="414" height="228" rx="14" fill="#111A2E" stroke="#243250" stroke-width="1"/>
+    <text x="24" y="36" font-family="Consolas,'Courier New','Microsoft YaHei',monospace"
+          font-size="17" fill="#7D8CA0">真实跑通的六个阶段 · logs/koubo-gpu</text>
+    <g font-family="Consolas,'Courier New','Microsoft YaHei',monospace" font-size="19">
       <g transform="translate(24 58)">
-        <circle cx="7" cy="7" r="7" fill="#22C55E"/><text x="28" y="13" fill="#F1F5F9">1-text</text>
-        <text x="200" y="13" fill="#64748B">BERT 注音</text>
-        <text x="310" y="13" fill="#22C55E">✔</text>
+        <circle cx="7" cy="7" r="7" fill="#22C55E"/>
+        <text x="28" y="13" fill="#F1F5F9">1-text</text>
+        <text x="158" y="13" fill="#94A3B8">BERT 注音</text>
+        <text x="366" y="13" text-anchor="end" fill="#22C55E">✔</text>
       </g>
       <g transform="translate(24 88)">
-        <circle cx="7" cy="7" r="7" fill="#22C55E"/><text x="28" y="13" fill="#F1F5F9">2-hubert</text>
-        <text x="200" y="13" fill="#64748B">SSL 特征</text>
-        <text x="310" y="13" fill="#22C55E">✔</text>
+        <circle cx="7" cy="7" r="7" fill="#22C55E"/>
+        <text x="28" y="13" fill="#F1F5F9">2-hubert</text>
+        <text x="158" y="13" fill="#94A3B8">SSL 特征</text>
+        <text x="366" y="13" text-anchor="end" fill="#22C55E">✔</text>
       </g>
       <g transform="translate(24 118)">
-        <circle cx="7" cy="7" r="7" fill="#22C55E"/><text x="28" y="13" fill="#F1F5F9">2-sv</text>
-        <text x="200" y="13" fill="#64748B">说话人特征</text>
-        <text x="310" y="13" fill="#22C55E">✔ 19/19</text>
+        <circle cx="7" cy="7" r="7" fill="#22C55E"/>
+        <text x="28" y="13" fill="#F1F5F9">2-sv</text>
+        <text x="158" y="13" fill="#94A3B8">说话人特征</text>
+        <text x="366" y="13" text-anchor="end" fill="#22C55E">✔ 19/19</text>
       </g>
       <g transform="translate(24 148)">
-        <circle cx="7" cy="7" r="7" fill="#22C55E"/><text x="28" y="13" fill="#F1F5F9">3-semantic</text>
-        <text x="200" y="13" fill="#64748B">语义 token</text>
-        <text x="310" y="13" fill="#22C55E">✔</text>
+        <circle cx="7" cy="7" r="7" fill="#22C55E"/>
+        <text x="28" y="13" fill="#F1F5F9">3-semantic</text>
+        <text x="158" y="13" fill="#94A3B8">语义 token</text>
+        <text x="366" y="13" text-anchor="end" fill="#22C55E">✔</text>
       </g>
       <g transform="translate(24 178)">
-        <circle cx="7" cy="7" r="7" fill="#22C55E"/><text x="28" y="13" fill="#F1F5F9">s2 + s1</text>
-        <text x="200" y="13" fill="#64748B">SoVITS / GPT</text>
-        <text x="310" y="13" fill="#22C55E">✔ 9.2min</text>
+        <circle cx="7" cy="7" r="7" fill="#22C55E"/>
+        <text x="28" y="13" fill="#F1F5F9">s2 + s1</text>
+        <text x="158" y="13" fill="#94A3B8">CPU · 9.2min</text>
+        <text x="366" y="13" text-anchor="end" fill="#22C55E">✔</text>
       </g>
     </g>
   </g>
 
   <!-- ============ 底部波形 motif ============ -->
   <g transform="translate(64 302)" fill="url(#wv)">
-    <rect x="0"   y="-8"  width="5" height="8"  rx="2.5"/>
-    <rect x="14"  y="-16" width="5" height="16" rx="2.5"/>
-    <rect x="28"  y="-6"  width="5" height="6"  rx="2.5"/>
-    <rect x="42"  y="-12" width="5" height="20" rx="2.5"/>
-    <rect x="56"  y="-12" width="5" height="12" rx="2.5"/>
-    <rect x="70"  y="-14" width="5" height="24" rx="2.5"/>
-    <rect x="84"  y="-10" width="5" height="10" rx="2.5"/>
-    <rect x="98"  y="-18" width="5" height="18" rx="2.5"/>
-    <rect x="112" y="-6"  width="5" height="6"  rx="2.5"/>
-    <rect x="126" y="-13" width="5" height="22" rx="2.5"/>
-    <rect x="140" y="-14" width="5" height="14" rx="2.5"/>
+    <rect x="0"   y="-7"  width="5" height="7"  rx="2.5"/>
+    <rect x="14"  y="-13" width="5" height="13" rx="2.5"/>
+    <rect x="28"  y="-5"  width="5" height="5"  rx="2.5"/>
+    <rect x="42"  y="-14" width="5" height="14" rx="2.5"/>
+    <rect x="56"  y="-9"  width="5" height="9"  rx="2.5"/>
+    <rect x="70"  y="-14" width="5" height="14" rx="2.5"/>
+    <rect x="84"  y="-8"  width="5" height="8"  rx="2.5"/>
+    <rect x="98"  y="-13" width="5" height="13" rx="2.5"/>
+    <rect x="112" y="-5"  width="5" height="5"  rx="2.5"/>
+    <rect x="126" y="-14" width="5" height="14" rx="2.5"/>
+    <rect x="140" y="-10" width="5" height="10" rx="2.5"/>
     <rect x="154" y="-4"  width="5" height="4"  rx="2.5"/>
-    <rect x="168" y="-12" width="5" height="12" rx="2.5"/>
-    <rect x="182" y="-12" width="5" height="20" rx="2.5"/>
-    <rect x="196" y="-8"  width="5" height="8"  rx="2.5"/>
-    <rect x="210" y="-16" width="5" height="16" rx="2.5"/>
+    <rect x="168" y="-9"  width="5" height="9"  rx="2.5"/>
+    <rect x="182" y="-14" width="5" height="14" rx="2.5"/>
+    <rect x="196" y="-7"  width="5" height="7"  rx="2.5"/>
+    <rect x="210" y="-12" width="5" height="12" rx="2.5"/>
   </g>
 </svg>
