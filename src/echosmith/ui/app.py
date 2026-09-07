@@ -1,7 +1,8 @@
-"""EchoSmith 主界面（Dear PyGui）：引擎向导 / 素材流水线 / 设置 / 日志。
+"""EchoSmith 主界面（Dear PyGui）——辅助模式。
 
-表现层走 ui.theme 设计令牌（深色工作台、单一 accent、4px 圆角）；
-每个 tab 至多一个主按钮（accent），停止/取消类用危险变体，状态文本按语义着色。
+人工操作与观察入口：引擎向导 / 素材流水线 / 训练 / 合成台 / 队列 / 声线卡 / 设置 / 日志。
+自动化主路径是 echosmith Skill 与 `python -m echosmith.cli`（不含 GUI 依赖）。
+表现层走 ui.theme 设计令牌；worker 线程不触碰 dpg，UI 经 set_frame_callback 轮询快照。
 """
 from __future__ import annotations
 
@@ -14,11 +15,18 @@ import dearpygui.dearpygui as dpg
 from .. import APP_NAME, __version__
 from ..config import Config
 from ..downloader import DownloadTask, load_manifest, valid_engine
+from ..engine import Engine, EngineError
 from ..fontutil import load_cjk_font
 from ..pipeline import Pipeline
+from ..queue_worker import Job, Worker
 from ..state import Shared
 from ..trainer import Trainer
+from ..tts_client import TTSClientError
+from ..voice_card import VoiceCard, scan_voice_cards
 from . import theme
+
+TEXT_LANGS = ["zh", "en", "ja", "ko", "yue"]
+SPLIT_METHODS = ["cut5", "auto", "zh_split", "en_split"]
 
 T_PKG, T_DL_BAR, T_DL_STATUS, T_ENG_VALID = "pkg", "dl_bar", "dl_status", "eng_valid"
 T_SRC, T_DSNAME, T_PL_STAGE, T_PL_BAR, T_PL_STATUS, T_LASTDS = (
@@ -34,17 +42,30 @@ T_TR_STAGE, T_TR_BAR, T_TR_STATUS, T_BTN_TRAIN = "tr_stage", "tr_bar", "tr_statu
 T_CARD_EXP, T_CARD_NAME, T_CARD_DEF, T_CARD_ROWS, T_CARD_STATUS = (
     "card_exp", "card_name", "card_def", "card_rows", "card_status")
 T_BTN_CARD_GEN = "btn_card_gen"
-T_ZLUDA, T_ZLUDA_DIR, T_HIP, T_ZPROBE = "zluda", "zluda_dir", "hip_path", "zluda_probe"
+# 合成台 / 队列 / 引擎控制
+T_VOICE_COMBO, T_EMOTION_COMBO, T_SPEED, T_TLANG, T_SPLIT = (
+    "voice", "emotion", "speed", "tlang", "split")
+T_TEXT, T_STATUS, T_BAR, T_QUEUED, T_LASTDIR = "text", "status", "bar", "queued", "lastdir"
+T_BTN_PAUSE, T_LOG_CHILD, T_ENG_LOG_CHILD = "btn_pause", "log_child", "eng_log_child"
+T_BTN_SUBMIT, T_BTN_QUEUE_CLEAR, T_BTN_ENG_START, T_BTN_ENG_STOP = (
+    "btn_submit", "btn_queue_clear", "btn_eng_start", "btn_eng_stop")
+T_ENG_STATUS, T_ENG_PORT, T_VOICES_DIR, T_OUTPUT_DIR, T_MP3 = (
+    "eng_status", "eng_port", "voices_dir", "output_dir", "mp3")
+T_ERR_TEXT = "err_text"
 
 
 class App:
     def __init__(self) -> None:
         self.cfg = Config()
         self.shared = Shared()
+        self.engine = Engine(self.cfg, self.shared)
+        self.worker = Worker(self.cfg, self.engine, self.shared)
+        self.worker.start()
         self.packages: list[dict] = []
         self.dl_task: DownloadTask | None = None
         self.pl_task: Pipeline | None = None
         self.trainer: Trainer | None = None
+        self.cards: list[VoiceCard] = []
         self.card_rows: list[dict] = []
         self._picking = False
         self._src_file = ""
@@ -56,16 +77,16 @@ class App:
         theme.apply()
         self._build()
         dpg.create_viewport(title=APP_NAME,   # ASCII 占位，真标题见 polish_viewport
-                            width=1040, height=700, min_width=920, min_height=580)
+                            width=1120, height=760, min_width=980, min_height=620)
         dpg.setup_dearpygui()
         dpg.show_viewport()
         dpg.set_primary_window("main", True)
         dpg.set_viewport_clear_color((*theme.BG, 255))
-        # 标题/暗色栏要等 GLFW 窗口真正建好（数帧后）才能改
         dpg.set_frame_callback(3, lambda: theme.polish_viewport(
             f"{APP_NAME} v{__version__} — 声音克隆工作台"))
         self._refresh_engine_valid()
         self._sync_settings()
+        self.refresh_cards()
         self._install_poll()
         dpg.start_dearpygui()
         dpg.destroy_context()
@@ -75,6 +96,9 @@ class App:
             self.pl_task.cancelled.set()
         if self.trainer and self.trainer.is_alive():
             self.trainer.cancel()
+        self.worker.stopped.set()
+        self._wake_worker()
+        self.engine.stop()
 
     # ------------------------------------------------------------ build ui
     def _build(self) -> None:
@@ -86,15 +110,16 @@ class App:
                     self._build_pipeline_tab()
                 with dpg.tab(label="训练"):
                     self._build_train_tab()
+                with dpg.tab(label="合成台"):
+                    self._build_synth_tab()
+                with dpg.tab(label="队列"):
+                    self._build_queue_tab()
                 with dpg.tab(label="声线卡"):
                     self._build_card_tab()
                 with dpg.tab(label="设置"):
                     self._build_settings_tab()
                 with dpg.tab(label="日志"):
-                    dpg.add_text("应用日志")
-                    theme.caption("下载/流水线/训练与引擎导入的运行记录")
-                    with dpg.child_window(tag=T_LOG, height=-1, horizontal_scrollbar=True):
-                        pass
+                    self._build_log_tab()
 
     def _build_engine_tab(self) -> None:
         theme.caption("GPT-SoVITS 整合包下载（GB 级，支持断点续传与镜像回退）")
@@ -115,8 +140,21 @@ class App:
         dpg.add_spacer(height=8)
         dpg.add_separator()
         dpg.add_spacer(height=2)
+        theme.header("引擎控制")
+        with dpg.group(horizontal=True):
+            theme.field_label("端口")
+            dpg.add_input_int(tag=T_ENG_PORT, width=110)
+            dpg.add_button(label="启动引擎", tag=T_BTN_ENG_START, callback=self._start_engine)
+            dpg.add_button(label="停止引擎", tag=T_BTN_ENG_STOP, callback=lambda: self._engine_call(self.engine.stop))
+            dpg.add_button(label="检测端口", callback=self._check_engine)
+        theme.primary(T_BTN_ENG_START)
+        theme.danger(T_BTN_ENG_STOP)
+        dpg.add_text("", tag=T_ENG_STATUS, color=theme.TEXT_FAINT)
+        dpg.add_spacer(height=8)
+        dpg.add_separator()
+        dpg.add_spacer(height=2)
         theme.header("引擎状态")
-        dpg.add_text("", tag=T_ENG_VALID, wrap=950)
+        dpg.add_text("", tag=T_ENG_VALID, wrap=1000)
 
     def _build_pipeline_tab(self) -> None:
         theme.caption("素材（视频/音频）→ 提音轨 → 静音切分 → FunASR 打标 → 训练清单")
@@ -138,16 +176,16 @@ class App:
         dpg.add_text("", tag=T_PL_STAGE)
         dpg.add_progress_bar(tag=T_PL_BAR, default_value=0.0, width=-1, overlay="—")
         dpg.add_text("空闲", tag=T_PL_STATUS, color=theme.TEXT_FAINT)
-        theme.note("", tag=T_LASTDS, wrap=950)
+        theme.note("", tag=T_LASTDS, wrap=1000)
         dpg.add_spacer(height=4)
         dpg.add_checkbox(tag=T_SEPARATE, label="先做人声/背景音分离（UVR5，需引擎就绪，人声干净素材可不勾）")
-        dpg.add_text("", tag=T_ERR, color=theme.DANGER, wrap=950)
+        dpg.add_text("", tag=T_ERR, color=theme.DANGER, wrap=1000)
         dpg.add_spacer(height=4)
         theme.caption("注：切分/打标参数在「设置」页调整。")
 
     def _build_train_tab(self) -> None:
         theme.caption("数据集 → prepare_datasets×3 → SoVITS(s2) → GPT(s1)；"
-                      "设备自动：CPU 训练（推荐）/ prepare 阶段可用 GPU（设置页）")
+                      "设备：CPU 训练（推荐）/ NVIDIA CUDA 原生")
         with dpg.group(horizontal=True):
             theme.field_label("训练清单")
             dpg.add_combo([], tag=T_DS_COMBO, width=380)
@@ -173,8 +211,52 @@ class App:
         dpg.add_spacer(height=4)
         theme.caption("CPU 训练耗时以分钟~小时计；轮数/批大小在「设置」页可调，日志实时滚到「日志」页。")
 
+    # ------------------------------------------------------------ 合成台
+    def _build_synth_tab(self) -> None:
+        with dpg.group(horizontal=True):
+            theme.field_label("声线")
+            dpg.add_combo([], tag=T_VOICE_COMBO, width=180, callback=self._on_voice_changed)
+            theme.field_label("情感")
+            dpg.add_combo([], tag=T_EMOTION_COMBO, width=140)
+            dpg.add_spacer(width=16)
+            dpg.add_button(label="刷新声线", callback=lambda: self.refresh_cards())
+        with dpg.group(horizontal=True):
+            theme.field_label("语种")
+            dpg.add_combo(TEXT_LANGS, tag=T_TLANG,
+                          default_value=str(self.cfg["text_lang"]), width=90)
+            theme.field_label("切分")
+            dpg.add_combo(SPLIT_METHODS, tag=T_SPLIT,
+                          default_value=str(self.cfg["text_split_method"]), width=110)
+            theme.field_label("语速")
+            dpg.add_slider_float(tag=T_SPEED, default_value=float(self.cfg["speed_factor"]),
+                                 min_value=0.5, max_value=2.0, format="%.2fx", width=200)
+        dpg.add_text("待合成文本（每行一条；可用 【情感】 前缀单独覆盖该行情感）：")
+        dpg.add_input_text(tag=T_TEXT, multiline=True, height=250,
+                           default_value="", tab_input=True)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="从 txt 导入…", callback=self._pick_txt)
+            dpg.add_button(label="加入队列", tag=T_BTN_SUBMIT, callback=self._submit)
+            dpg.add_button(label="清空文本", callback=lambda: dpg.set_value(T_TEXT, ""))
+        theme.primary(T_BTN_SUBMIT)
+        dpg.add_spacer(height=4)
+        dpg.add_text("", tag=T_ERR_TEXT, color=theme.DANGER, wrap=1000)
+
+    def _build_queue_tab(self) -> None:
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="继续", callback=self._resume)
+            dpg.add_button(label="暂停", tag=T_BTN_PAUSE, callback=self._pause)
+            dpg.add_button(label="清空队列", tag=T_BTN_QUEUE_CLEAR, callback=self._clear_queue)
+            dpg.add_spacer(width=16)
+            dpg.add_button(label="打开输出目录", callback=self._open_output_dir)
+        theme.danger(T_BTN_QUEUE_CLEAR)
+        dpg.add_spacer(height=8)
+        dpg.add_text("空闲", tag=T_STATUS, color=theme.TEXT_FAINT)
+        dpg.add_progress_bar(tag=T_BAR, default_value=0.0, width=-1, overlay="0/0")
+        theme.note("", tag=T_QUEUED)
+        theme.note("", tag=T_LASTDIR, wrap=1000)
+
     def _build_card_tab(self) -> None:
-        theme.caption("训练产物 + 参考音频 → card.json（EchoRunner 声线卡，落 models/voices/）")
+        theme.caption("训练产物 + 参考音频 → card.json（声线卡，落 models/voices/）")
         with dpg.group(horizontal=True):
             theme.field_label("实验名")
             dpg.add_input_text(tag=T_CARD_EXP, width=180, hint="如 xiaoyu")
@@ -183,19 +265,71 @@ class App:
             dpg.add_input_text(tag=T_CARD_NAME, width=140)
             theme.field_label("默认情感")
             dpg.add_input_text(tag=T_CARD_DEF, width=110)
-        dpg.add_text("权重：未扫描", tag=T_CARD_STATUS, color=theme.TEXT_FAINT, wrap=950)
+        dpg.add_text("权重：未扫描", tag=T_CARD_STATUS, color=theme.TEXT_FAINT, wrap=1000)
         dpg.add_spacer(height=4)
         dpg.add_separator()
         dpg.add_spacer(height=2)
         theme.header("参考音频")
         theme.caption("每行 = 一种情感；路径相对引擎目录或绝对路径。建议 3~10 秒、人声干净；"
                       "prompt_text 填该音频里说的原话，越准克隆越稳。")
-        with dpg.child_window(tag=T_CARD_ROWS, height=220):
+        with dpg.child_window(tag=T_CARD_ROWS, height=200):
             pass
         with dpg.group(horizontal=True):
             dpg.add_button(label="+ 添加情感行", callback=self._add_card_row)
             dpg.add_button(label="生成 card.json", tag=T_BTN_CARD_GEN, callback=self._generate_card)
         theme.primary(T_BTN_CARD_GEN)
+
+    def _build_settings_tab(self) -> None:
+        theme.header("通用")
+        with dpg.group(horizontal=True):
+            theme.field_label("ffmpeg")
+            dpg.add_input_text(tag=T_FFMPEG, width=560, hint="留空自动探测（PATH / MomentShift 内置）")
+        dpg.add_spacer(height=4)
+        with dpg.group(horizontal=True):
+            theme.field_label("FunASR 地址")
+            dpg.add_input_text(tag=T_FUNASR_URL, width=380)
+            theme.field_label("模型")
+            dpg.add_input_text(tag=T_FUNASR_MODEL, width=170)
+        with dpg.group(horizontal=True):
+            theme.field_label("说话人标识")
+            dpg.add_input_text(tag=T_SPEAKER, width=140)
+            theme.field_label("语言")
+            dpg.add_input_text(tag=T_LANG, width=80)
+        with dpg.group(horizontal=True):
+            theme.field_label("声线目录")
+            dpg.add_input_text(tag=T_VOICES_DIR, width=430)
+            theme.field_label("输出目录")
+            dpg.add_input_text(tag=T_OUTPUT_DIR, width=330)
+        dpg.add_spacer(height=6)
+        dpg.add_separator()
+        dpg.add_spacer(height=2)
+        theme.header("切分参数")
+        with dpg.group(horizontal=True):
+            theme.field_label("最短片段 ms")
+            dpg.add_input_int(tag=T_MINCLIP, width=110)
+            theme.field_label("最长片段 ms")
+            dpg.add_input_int(tag=T_MAXCLIP, width=110)
+        with dpg.group(horizontal=True):
+            theme.field_label("静音阈值 dB")
+            dpg.add_input_int(tag=T_SDB, width=110)
+            theme.field_label("静音最短时长 s")
+            dpg.add_input_float(tag=T_SDUR, width=110, format="%.1f")
+        dpg.add_spacer(height=6)
+        dpg.add_separator()
+        dpg.add_spacer(height=2)
+        theme.header("合成")
+        dpg.add_checkbox(tag=T_MP3, label="同时输出 mp3（需 ffmpeg）")
+        dpg.add_spacer(height=6)
+        dpg.add_button(label="保存设置", callback=self._save_settings)
+
+    def _build_log_tab(self) -> None:
+        theme.header("应用日志")
+        with dpg.child_window(tag=T_LOG_CHILD, height=230, horizontal_scrollbar=True):
+            pass
+        dpg.add_spacer(height=4)
+        theme.header("引擎日志（api_v2）")
+        with dpg.child_window(tag=T_ENG_LOG_CHILD, height=210, horizontal_scrollbar=True):
+            pass
 
     def _card_row_widget(self, row: dict) -> None:
         with dpg.group(horizontal=True, parent=T_CARD_ROWS):
@@ -203,7 +337,7 @@ class App:
             row["ref"] = dpg.add_input_text(width=420, hint="参考音频路径")
             dpg.add_button(label="选择…",
                            callback=lambda s, a, u=row: self._pick_ref_audio(u))
-            row["prompt"] = dpg.add_input_text(width=320, hint="该音频里说的原话")
+            row["prompt"] = dpg.add_input_text(width=300, hint="该音频里说的原话")
 
     def _add_card_row(self) -> None:
         row: dict = {}
@@ -288,59 +422,6 @@ class App:
         if self.trainer and self.trainer.is_alive():
             self.trainer.cancel()
 
-    def _build_settings_tab(self) -> None:
-        theme.header("通用")
-        with dpg.group(horizontal=True):
-            theme.field_label("ffmpeg")
-            dpg.add_input_text(tag=T_FFMPEG, width=560, hint="留空自动探测（PATH / MomentShift 内置）")
-        dpg.add_spacer(height=4)
-        with dpg.group(horizontal=True):
-            theme.field_label("FunASR 地址")
-            dpg.add_input_text(tag=T_FUNASR_URL, width=380)
-            theme.field_label("模型")
-            dpg.add_input_text(tag=T_FUNASR_MODEL, width=170)
-        with dpg.group(horizontal=True):
-            theme.field_label("说话人标识")
-            dpg.add_input_text(tag=T_SPEAKER, width=140)
-            theme.field_label("语言")
-            dpg.add_input_text(tag=T_LANG, width=80)
-        dpg.add_spacer(height=6)
-        dpg.add_separator()
-        dpg.add_spacer(height=2)
-        theme.header("切分参数")
-        with dpg.group(horizontal=True):
-            theme.field_label("最短片段 ms")
-            dpg.add_input_int(tag=T_MINCLIP, width=110)
-            theme.field_label("最长片段 ms")
-            dpg.add_input_int(tag=T_MAXCLIP, width=110)
-        with dpg.group(horizontal=True):
-            theme.field_label("静音阈值 dB")
-            dpg.add_input_int(tag=T_SDB, width=110)
-            theme.field_label("静音最短时长 s")
-            dpg.add_input_float(tag=T_SDUR, width=110, format="%.1f")
-        dpg.add_spacer(height=6)
-        dpg.add_separator()
-        dpg.add_spacer(height=2)
-        theme.header("GPU 加速")
-        theme.caption("N 卡无需开启；AMD 开 ZLUDA；都没有保持关闭走 CPU。"
-                      "训练建议保持 CPU（小算子负载 GPU 收益为负）；prepare 阶段可用 GPU。")
-        dpg.add_checkbox(tag=T_ZLUDA,
-                         label="启用 ZLUDA GPU 加速（本工具的训练/分离；合成的开关在 EchoRunner）")
-        with dpg.group(horizontal=True):
-            theme.field_label("ZLUDA 目录")
-            dpg.add_input_text(tag=T_ZLUDA_DIR, width=470,
-                               hint="含 nvcuda.dll 的目录，如 E:\\zluda\\zluda")
-        with dpg.group(horizontal=True):
-            theme.field_label("HIP SDK 目录")
-            dpg.add_input_text(tag=T_HIP, width=470,
-                               hint="含 bin\\amdhip64_7.dll；ML 版（含 MIOpen.dll）卷积更快")
-        with dpg.group(horizontal=True):
-            dpg.add_button(label="探测设备后端", callback=lambda: threading.Thread(
-                target=self._probe_device, daemon=True).start())
-            theme.note("", tag=T_ZPROBE)
-        dpg.add_spacer(height=6)
-        dpg.add_button(label="保存设置", callback=self._save_settings)
-
     # ------------------------------------------------------------ polling
     def _install_poll(self) -> None:
         def _poll() -> None:
@@ -350,28 +431,17 @@ class App:
 
     _probe_result: dict | None = None
 
-    def _probe_device(self) -> None:
-        """后台探测设备后端（线程内不得碰 dpg，结果经 _probe_result 中转）。"""
-        from ..device import probe  # noqa: PLC0415
-        try:
-            self._probe_result = probe(self.cfg.engine_path, self.cfg)
-        except (OSError, ValueError) as e:
-            self._probe_result = {"ok": False, "backend": "unknown", "detail": str(e)}
-
     def _refresh_dynamic(self) -> None:
         s = self.shared.snapshot()
-        # 待应用的清单（后台线程 → 主线程中转）
         if self._pending_labels is not None:
             labels, self._pending_labels = self._pending_labels, None
             dpg.configure_item(T_PKG, items=labels,
                                default_value=labels[0] if labels else "")
-        # 下载
         status, done, total, speed = s["dl"]
         pct = (done / total) if total else 0.0
         dpg.set_value(T_DL_BAR, pct)
         dpg.configure_item(T_DL_BAR, overlay=f"{pct*100:.1f}%" if total else "—")
         theme.set_status(T_DL_STATUS, status)
-        # 流水线
         stage, plstatus, idx, tot = s["pl"]
         dpg.set_value(T_PL_STAGE, f"阶段：{stage}" if stage else "")
         ppct = (idx / tot) if tot else 0.0
@@ -380,31 +450,33 @@ class App:
         theme.set_status(T_PL_STATUS, plstatus)
         dpg.set_value(T_LASTDS, f"最近数据集：{s['last_dataset']}" if s["last_dataset"] else "")
         dpg.set_value(T_ERR, s["error"])
-        # 训练
         tr_stage, tr_status, tr_idx, tr_tot = s["tr"]
         dpg.set_value(T_TR_STAGE, f"阶段：{tr_stage}" if tr_stage else "")
         tpct = (tr_idx / tr_tot) if tr_tot else 0.0
         dpg.set_value(T_TR_BAR, tpct)
         dpg.configure_item(T_TR_BAR, overlay=f"{tr_idx}/{tr_tot}" if tr_tot else "—")
         theme.set_status(T_TR_STATUS, tr_status)
-        # 设备探测结果（后台线程 → 主线程中转）
-        if self._probe_result is not None:
-            r, self._probe_result = self._probe_result, None
-            mark = "✔" if r.get("ok") else "✘"
-            torch = f"｜torch {r['torch']}" if r.get("torch") else ""
-            theme.set_status(T_ZPROBE,
-                             f"{mark} {r.get('backend', '?')}：{r.get('detail', '')}{torch}")
-        # 日志
-        lines = s["app_log"]
-        children = dpg.get_item_children(T_LOG, 1)
+        # 合成队列
+        theme.set_status(T_STATUS, s["queue_status"] + (f"　⚠ {s['queue_error']}" if s["queue_error"] else ""))
+        qtotal = max(s["job_total"], 1)
+        dpg.set_value(T_BAR, s["job_index"] / qtotal)
+        dpg.configure_item(T_BAR, overlay=f"{s['job_index']}/{s['job_total']}")
+        dpg.set_value(T_QUEUED, f"排队任务：{s['queued']}")
+        dpg.set_value(T_LASTDIR, f"最近输出：{s['last_output_dir']}" if s["last_output_dir"] else "")
+        self._fill_log_child(T_LOG_CHILD, s["app_log"])
+        self._fill_log_child(T_ENG_LOG_CHILD, s["engine_log"])
+        self._refresh_engine_valid()
+
+    @staticmethod
+    def _fill_log_child(tag: str, lines: list[str]) -> None:
+        children = dpg.get_item_children(tag, 1)
         n_shown = len(children) if children else 0
         if n_shown > len(lines):
             for c in list(children):
                 dpg.delete_item(c)
             n_shown = 0
         for line in lines[n_shown:]:
-            dpg.add_text(line, parent=T_LOG)
-        self._refresh_engine_valid()
+            dpg.add_text(line, parent=tag)
 
     def _refresh_engine_valid(self) -> None:
         eng = self.cfg.engine_path
@@ -419,11 +491,7 @@ class App:
                              f"已配置目录但校验失败（缺 api_v2.py 或 runtime/python.exe）：{eng}")
 
     def _ensure_zluda_patch(self, eng: Path) -> None:
-        """启动时补齐 ZLUDA 兼容补丁（幂等，缺了才打）。
-
-        老版本装的引擎没有这些补丁，升级后自动补上，这样 EchoRunner 开 GPU
-        加速时不会踩 ORT CUDA EP 崩溃 / 卷积缺 MIOpen 的坑。
-        """
+        """引擎就绪时补齐 ZLUDA 兼容补丁（ZLUDA_MODE 守卫，未启用零副作用）。"""
         from ..zluda_patch import apply as apply_zluda  # noqa: PLC0415
 
         try:
@@ -433,8 +501,6 @@ class App:
             return
         if done:
             self.shared.log(f"[引擎] 自动补齐 {len(done)} 个 ZLUDA 兼容补丁")
-            for d in done:
-                self.shared.log(f"  · {d}")
 
     # ------------------------------------------------------------ packages
     def _load_packages(self) -> None:
@@ -479,7 +545,6 @@ class App:
                             cancel_callback=lambda *a: setattr(self, "_picking", False))
 
     def _import_engine(self, p: Path) -> None:
-        """本地 .7z 导入或直接指定已解压的整合包目录。"""
         from ..downloader import DownloaderError, _models_dir  # noqa: PLC0415
         try:
             if p.is_file() and p.suffix.lower() == ".7z":
@@ -558,9 +623,10 @@ class App:
         dpg.set_value(T_S2EP, int(self.cfg["s2_total_epoch"]))
         dpg.set_value(T_S1EP, int(self.cfg["s1_total_epoch"]))
         dpg.set_value(T_BS, int(self.cfg["batch_size"]))
-        dpg.set_value(T_ZLUDA, bool(self.cfg["zluda_mode"]))
-        dpg.set_value(T_ZLUDA_DIR, str(self.cfg["zluda_dir"] or ""))
-        dpg.set_value(T_HIP, str(self.cfg["hip_path"] or ""))
+        dpg.set_value(T_ENG_PORT, int(self.cfg["engine_port"]))
+        dpg.set_value(T_VOICES_DIR, str(self.cfg["voices_dir"]))
+        dpg.set_value(T_OUTPUT_DIR, str(self.cfg["output_dir"]))
+        dpg.set_value(T_MP3, bool(self.cfg["save_mp3"]))
 
     def _save_settings(self) -> None:
         self.cfg["ffmpeg_path"] = dpg.get_value(T_FFMPEG).strip()
@@ -571,32 +637,135 @@ class App:
         self.cfg["min_clip_ms"] = max(100, int(dpg.get_value(T_MINCLIP)))
         self.cfg["max_clip_ms"] = max(self.cfg["min_clip_ms"] + 100,
                                       int(dpg.get_value(T_MAXCLIP)))
-        self.cfg["silence_db"] = int(dpg.get_value(T_SDB))
-        self.cfg["silence_min_dur"] = max(0.1, float(dpg.get_value(T_SDUR)))
-        self.cfg["zluda_mode"] = bool(dpg.get_value(T_ZLUDA))
-        self.cfg["zluda_dir"] = dpg.get_value(T_ZLUDA_DIR).strip()
-        self.cfg["hip_path"] = dpg.get_value(T_HIP).strip()
+        self.cfg["engine_port"] = int(dpg.get_value(T_ENG_PORT) or 9885)
+        self.cfg["voices_dir"] = dpg.get_value(T_VOICES_DIR).strip() or "models/voices"
+        self.cfg["output_dir"] = dpg.get_value(T_OUTPUT_DIR).strip() or "output"
+        self.cfg["save_mp3"] = bool(dpg.get_value(T_MP3))
         try:
             self.cfg.save()
             self.shared.log("[设置] 已保存 config/echosmith.json")
         except OSError as e:
             self.shared.set_error(f"保存失败：{e}")
+
+    # ------------------------------------------------------------ 声线卡消费
+    def refresh_cards(self) -> None:
+        self.cards = scan_voice_cards(self.cfg.voices_path)
+        names = [c.name for c in self.cards]
+        dpg.configure_item(T_VOICE_COMBO, items=names,
+                           default_value=names[0] if names else "")
+        self._on_voice_changed()
+
+    def _current_card(self) -> VoiceCard | None:
+        name = dpg.get_value(T_VOICE_COMBO)
+        for c in self.cards:
+            if c.name == name:
+                return c
+        return None
+
+    def _on_voice_changed(self, *args) -> None:
+        card = self._current_card()
+        labels = card.emotion_labels() if card else []
+        dpg.configure_item(T_EMOTION_COMBO, items=labels,
+                           default_value=card.default_emotion if card and card.default_emotion in labels
+                           else (labels[0] if labels else ""))
+
+    def _submit(self) -> None:
+        dpg.set_value(T_ERR_TEXT, "")
+        card = self._current_card()
+        if card is None:
+            dpg.set_value(T_ERR_TEXT, "没有可用声线卡：请先在 声线目录 下放置 card.json（可用「声线卡」页生成）")
             return
-        if self.cfg["zluda_mode"]:  # 保存即校验，给出能落地的错误提示
-            from ..device import DeviceError, zluda_env  # noqa: PLC0415
+        text = dpg.get_value(T_TEXT).strip()
+        if not text:
+            dpg.set_value(T_ERR_TEXT, "待合成文本为空")
+            return
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            dpg.set_value(T_ERR_TEXT, "没有有效行")
+            return
+        job = Job(
+            card=card,
+            emotion=dpg.get_value(T_EMOTION_COMBO),
+            lines=lines,
+            text_lang=dpg.get_value(T_TLANG),
+            speed_factor=float(dpg.get_value(T_SPEED)),
+            split_method=dpg.get_value(T_SPLIT),
+        )
+        self.worker.resume()  # 错误停止后提交新任务自动解除暂停
+        n = self.worker.submit(job)
+        self.shared.log(f"[队列] 已加入任务 {job.name}，当前排队 {n}")
+
+    def _pick_txt(self) -> None:
+        if self._picking:
+            return
+        self._picking = True
+
+        def _cb(sender, app_data):
+            self._picking = False
+            path = app_data.get("file_path_name") if isinstance(app_data, dict) else None
+            if not path:
+                return
             try:
-                zluda_env(self.cfg)
-                self.shared.log("[设置] ZLUDA 环境校验通过")
-            except DeviceError as e:
-                self.shared.set_error(str(e))
-        elif self.cfg.engine_path.is_dir():  # 关闭加速 → 还原 NVIDIA 原版 DLL
-            from ..zluda_patch import restore_runtime_shims  # noqa: PLC0415
-            try:
-                done = restore_runtime_shims(self.cfg.engine_path)
-                if done:
-                    self.shared.log(f"[设置] 已还原 NVIDIA 原版 DLL：{'、'.join(done)}")
-            except (ValueError, OSError) as e:
-                self.shared.set_error(f"还原 DLL 失败：{e}")
+                content = Path(path).read_text("utf-8", errors="replace")
+            except OSError as e:
+                dpg.set_value(T_ERR_TEXT, f"读取失败：{e}")
+                return
+            old = dpg.get_value(T_TEXT)
+            dpg.set_value(T_TEXT, (old + "\n" if old.strip() else "") + content.strip())
+
+        dpg.add_file_dialog(directory_selector=False, show_label=False, modal=True,
+                            callback=_cb, cancel_callback=lambda *a: setattr(self, "_file_picking", False),
+                            file_filter="*.txt")
+
+    def _wake_worker(self) -> None:
+        self.worker.resume()
+
+    def _resume(self) -> None:
+        self.worker.resume()
+        self.shared.set_status("继续")
+
+    def _pause(self) -> None:
+        self.worker.pause()
+
+    def _clear_queue(self) -> None:
+        n = self.worker.clear()
+        self.shared.log(f"[队列] 已清空 {n} 个任务")
+
+    def _open_output_dir(self) -> None:
+        s = self.shared.snapshot()
+        target = s["last_output_dir"] or str(self.cfg.output_path)
+        self._open_in_explorer(target)
+
+    def _open_voices_dir(self) -> None:
+        self._open_in_explorer(str(self.cfg.voices_path))
+
+    @staticmethod
+    def _open_in_explorer(path: str) -> None:
+        p = Path(path)
+        p.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(p))  # type: ignore[attr-defined]  # noqa: S606
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------ 引擎控制
+    def _engine_call(self, fn) -> None:
+        threading.Thread(target=lambda: self._safe_call(fn), daemon=True).start()
+
+    def _safe_call(self, fn) -> None:
+        try:
+            fn()
+        except (EngineError, TTSClientError, OSError) as e:
+            self.shared.log(f"[引擎] {e}")
+
+    def _start_engine(self) -> None:
+        self.cfg["engine_port"] = int(dpg.get_value(T_ENG_PORT) or 9885)
+        self._engine_call(self.engine.start)
+
+    def _check_engine(self) -> None:
+        ok = self.engine.port_open()
+        theme.set_status(T_ENG_STATUS,
+                         f"端口 {self.cfg.engine_url} {'可达 ✔' if ok else '不可达 ✘'}")
 
 
 def run() -> None:

@@ -27,3 +27,6 @@ models/*.part
 .vscode/
 models/voices/*
 !models/voices/.gitkeep
+
+# 模型与训练产物(不入库)
+models/backup_jimi_v1/

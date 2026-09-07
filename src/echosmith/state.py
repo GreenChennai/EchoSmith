@@ -26,6 +26,15 @@ class Shared:
         self.tr_total = 0
         self.error = ""
         self.last_dataset = ""
+        # 合成队列（EchoRunner 合并）
+        self.engine_log: deque[str] = deque(maxlen=400)
+        self.job_name = "—"
+        self.job_index = 0
+        self.job_total = 0
+        self.queue_status = "空闲"
+        self.queue_error = ""
+        self.queued = 0
+        self.last_output_dir = ""
 
     # 写入口 -----------------------------------------------------------------
     def log(self, msg: str) -> None:
@@ -72,6 +81,28 @@ class Shared:
         with self.lock:
             self.last_dataset = d
 
+    # 合成队列（EchoRunner 合并）
+    def engine_log_line(self, line: str) -> None:
+        with self.lock:
+            self.engine_log.append(line.rstrip())
+
+    def set_status(self, status: str, error: str = "") -> None:
+        with self.lock:
+            self.queue_status = status
+            self.queue_error = error
+
+    def set_progress(self, name: str, index: int, total: int) -> None:
+        with self.lock:
+            self.job_name, self.job_index, self.job_total = name, index, total
+
+    def set_queued(self, n: int) -> None:
+        with self.lock:
+            self.queued = n
+
+    def set_last_output_dir(self, d: str) -> None:
+        with self.lock:
+            self.last_output_dir = d
+
     # 读入口 -----------------------------------------------------------------
     def snapshot(self) -> dict:
         with self.lock:
@@ -82,4 +113,12 @@ class Shared:
                 "pl": (self.pl_stage, self.pl_status, self.pl_index, self.pl_total),
                 "tr": (self.tr_stage, self.tr_status, self.tr_index, self.tr_total),
                 "last_dataset": self.last_dataset,
+                "job_name": self.job_name,
+                "job_index": self.job_index,
+                "job_total": self.job_total,
+                "queue_status": self.queue_status,
+                "queue_error": self.queue_error,
+                "queued": self.queued,
+                "last_output_dir": self.last_output_dir,
+                "engine_log": list(self.engine_log),
             }

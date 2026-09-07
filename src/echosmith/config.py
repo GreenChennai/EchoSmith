@@ -12,6 +12,8 @@ CONFIG_FILE_NAME = "echosmith.json"
 
 DEFAULTS = {
     "engine_dir": "",                # GPT-SoVITS 整合包根目录（含 api_v2.py 与 runtime/）
+    "engine_host": "127.0.0.1",      # 引擎 api_v2 绑定地址
+    "engine_port": 9885,             # 引擎 api_v2 端口
     "input_dir": "input",            # 素材根目录
     "dataset_dir": "models/datasets",# 训练数据集根目录
     "output_dir": "output",
@@ -36,10 +38,12 @@ DEFAULTS = {
     "save_every_epoch": 4,
     # 声线卡输出目录（EchoRunner 兼容格式）
     "voices_dir": "models/voices",
-    # 设备后端：NVIDIA 原生 CUDA / AMD 经 ZLUDA（torch 仍走 CUDA 契约）/ CPU 自动兜底
-    "zluda_mode": False,             # AMD 显卡 ZLUDA 加速开关
-    "zluda_dir": "",                 # ZLUDA 运行时目录（含 nvcuda.dll，如 E:\zluda\zluda）
-    "hip_path": "",                  # HIP SDK 目录（含 bin/amdhip64_7.dll，如 E:\zluda\hip72）
+    # 合成默认值
+    "text_lang": "zh",               # 待合成文本语言 zh/en/ja/ko/yue
+    "text_split_method": "cut5",     # 长文本切分方式
+    "speed_factor": 1.0,             # 语速 0.5~2.0
+    "save_mp3": False,               # 额外转出 mp3（需 ffmpeg）
+    # 设备后端：CPU / NVIDIA CUDA 原生（引擎自动探测，无需配置）
 }
 
 
@@ -101,3 +105,15 @@ class Config:
     @property
     def dataset_path(self) -> Path:
         return resolve(self.data["dataset_dir"])
+
+    @property
+    def voices_path(self) -> Path:
+        return resolve(self.data["voices_dir"])
+
+    @property
+    def output_path(self) -> Path:
+        return resolve(self.data["output_dir"])
+
+    @property
+    def engine_url(self) -> str:
+        return f"http://{self.data['engine_host']}:{int(self.data['engine_port'])}"
